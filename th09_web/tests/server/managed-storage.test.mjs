@@ -5,12 +5,16 @@ import {spawnSync} from 'node:child_process';
 import {cp, mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {pathToFileURL} from 'node:url';
 import vm from 'node:vm';
 import {exportReplayName, importReplayName} from '../../sdl-runtime/motion-replay.mjs';
 
 // Execute the generated shells, with persistence keyed by the actual IDBFS
 // mount point. This checks file ownership and reload ordering, not game logic.
 async function openRuntime(directory, databases) {
+  // The VM strips shell imports, so supply its real packaged keyboard helper
+  // explicitly instead of leaving the current shell's dependency undefined.
+  const {createBrowserKeyboard} = await import(pathToFileURL(join(directory, 'directory-keyboard.mjs')).href);
   const html = await readFile(join(directory, 'th09.html'), 'utf8');
   const variant = /name="eagler-runtime-variant" content="([^"]+)"/.exec(html)?.[1];
   const files = new Map(), links = new Map();
@@ -49,7 +53,7 @@ async function openRuntime(directory, databases) {
   const element = {addEventListener() {}, focus() {}};
   const context = {
     console, URLSearchParams, Uint8Array, ArrayBuffer, TextDecoder, performance,
-    exportReplayName, importReplayName, scanCodes: {},
+    exportReplayName, importReplayName, createBrowserKeyboard, scanCodes: {},
     createModule: async () => core,
     location: {search: '?managedData=1&runtimeEpoch=1', origin: 'https://test.invalid'},
     window: {addEventListener() {}},
