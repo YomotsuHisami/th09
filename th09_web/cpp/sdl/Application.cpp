@@ -138,7 +138,7 @@ struct Application final:GameMedia,InGameMenuServices,TitleServices,EndingServic
         if(paused)menus.update_pause(device);else if(over)menus.update_game_over(device);else if(complete)menus.update_match_end(device);else if(!session->is_demo()&&(device.pressed&8)&&session->phase==SessionPhase::match){paused=world->paused=true;sound(34,0);audio.pause_music(true);}
         if(pending_action>=0){const auto action=InGameAction(pending_action);pending_action=-1;
             if(action==InGameAction::retry||action==InGameAction::replay_retry||action==InGameAction::restart_extra){presentation.renderer.flush();if(!session->retry()){error=session->error;return false;}world=session->world.get();presentation.world=world;paused=over=complete=false;menus.pause={};menus.game_over={};menus.match_end={};audio.pause_music(false);}
-            else if(action==InGameAction::continue_match){audio.music(-1);if(!session->continue_game()){error="Unable to continue";return false;}paused=over=complete=false;audio.pause_music(false);}
+            else if(action==InGameAction::continue_match){audio.pause_music(true);if(!session->continue_game()){error="Unable to continue";return false;}paused=over=complete=false;audio.pause_music(false);}
             else {session->finish();return return_title(action==InGameAction::save_score);}
         }
         if(!paused&&!over&&!complete){presentation.renderer.flush();if(!session->update(left,right,keys)){error=session->error;return false;}world=session->world.get();presentation.world=world;}
