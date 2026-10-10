@@ -94,13 +94,18 @@ struct Driver {
     std::vector<std::uint64_t> hashes;
     std::vector<unsigned> captureCount;
     unsigned published=0, waits=0, localImmediate=0;
-    explicit Driver(Link& link):session(link),hashes(800),captureCount(800){}
+    bool deferInputs=false;
+    explicit Driver(Link& link,bool defer=false):session(link),hashes(800),captureCount(800),deferInputs(defer){}
     void tick(unsigned side,std::uint64_t now,unsigned limit) {
-        CHECK(session.Pump(now,session.Frame()<limit));
-        if(!session.Ready())return;
+        const bool pumped=session.Pump(now,session.Frame()<limit,0,deferInputs);
+        if(!pumped){CHECK(session.FlushDeferredInputs(now));CHECK(pumped);}
+        if(!session.Ready()){CHECK(session.FlushDeferredInputs(now));return;}
         if(session.NeedsCapture()&&session.Frame()<limit){
-            auto f=session.Frame();CHECK(++captureCount[f]==1);CHECK(session.Capture(input(side,f),now));
+            auto f=session.Frame();
+            CHECK(session.Channel().LatestCapture()==INVALID_FRAME||session.Channel().LatestCapture()+1==f);
+            CHECK(++captureCount[f]==1);CHECK(session.Capture(input(side,f),now));
         }
+        CHECK(session.FlushDeferredInputs(now));
         auto rollback=session.RollbackFrame();
         if(rollback!=INVALID_FRAME){
             const auto end=session.Frame();CHECK(end-rollback<=RollbackSession::History);
@@ -126,9 +131,9 @@ struct Driver {
         CHECK(session.Complete(d));return true;
     }
 };
-void simulation(unsigned mode) {
+void simulation(unsigned mode,bool deferInputs=false) {
     Link a,b;a.peer=&b;b.peer=&a;a.mode=b.mode=mode;
-    Driver left(a),right(b);CHECK(left.session.Begin(config(0),0));CHECK(right.session.Begin(config(1),0));
+    Driver left(a,deferInputs),right(b,deferInputs);CHECK(left.session.Begin(config(0),0));CHECK(right.session.Begin(config(1),0));
     constexpr unsigned frames=600;std::uint64_t now=0;
     for(;now<50000;++now){
         a.now=b.now=now;
@@ -149,7 +154,7 @@ void simulation(unsigned mode) {
     if(mode==3)CHECK(left.session.Channel().RepairsSent()>0&&right.session.Channel().RepairsSent()>0);
     CHECK(left.session.Retire(now));CHECK(right.session.Retire(now));
     CHECK(!left.session.Ready()&&!right.session.Ready());
-    std::printf("mode=%u frames=%u corrections=%u/%u resim=%u/%u waits=%u/%u elapsed=%llu ms PASS\n",mode,frames,
+    std::printf("mode=%u deferInputs=%u frames=%u corrections=%u/%u resim=%u/%u waits=%u/%u elapsed=%llu ms PASS\n",mode,unsigned(deferInputs),frames,
         left.session.Corrections(),right.session.Corrections(),left.session.Resimulated(),right.session.Resimulated(),
         left.waits,right.waits,(unsigned long long)now);
 }
@@ -229,6 +234,37 @@ struct PacingFixture {
         left.state=left.checkpoints[f%RollbackSession::History];CHECK(left.session.Restored(f));
     }
 };
+void input_batch_scopes() {
+    {
+        PacingFixture f;f.advance(8);f.actual(0,7);f.pump(20);
+        CHECK(f.left.session.RollbackFrame()==0);f.restore();
+        CHECK(f.left.session.Frame()==0&&!f.left.session.NeedsCapture());
+        const auto sent=f.a.sent;
+        f.a.now=f.b.now=f.now=60;
+        CHECK(f.left.session.Pump(60,true,0,true));
+        // An unfinished replay cannot postpone an ACK for a future capture,
+        // even if its caller supplies the opt-in hint on every callback.
+        CHECK(f.a.sent==sent+1&&f.left.session.Captures()==8);
+        CHECK(f.left.session.FlushDeferredInputs(60));CHECK(f.a.sent==sent+1);
+        CHECK(f.left.step(0)&&!f.left.session.NeedsCapture());
+    }
+    {
+        PacingFixture f;f.advance(1);f.actual(0,0);
+        f.a.now=f.b.now=f.now=1;const auto sent=f.a.sent;
+        CHECK(f.left.session.Pump(1,true,0,true));CHECK(f.a.sent==sent);
+        FrameInput invalid;invalid.analogMode=AnalogMode::DirectTouch;
+        invalid.x=std::numeric_limits<float>::infinity();
+        CHECK(!f.left.session.Capture(invalid,1));
+        CHECK(f.left.session.Failed()&&f.left.session.Captures()==1);
+        CHECK(f.left.session.FlushDeferredInputs(1));CHECK(f.a.sent==sent+1);
+        InputPacket old;const auto& wire=f.b.pending.back().bytes;
+        CHECK(DecodeInputPacket(wire.data(),wire.size(),&old));
+        CHECK(old.sequence==2&&old.ackFrame==0&&old.latestFrame==0);
+        CHECK(old.inputCount==1&&old.inputs[0]==input(0,0));
+        CHECK(f.left.session.Failed());
+    }
+    std::puts("Input send batch: partial replay and rejected capture flush PASS");
+}
 void network_pacing() {
     {
         PacingFixture f;f.advance(7);f.pump(0);
@@ -309,5 +345,9 @@ void network_pacing() {
     }
     std::puts("Network headroom, input holes, partial replay, recovery, clock and mode pacing contracts PASS");
 }
-int main(){contracts();network_pacing();for(unsigned mode=0;mode<5;++mode)simulation(mode);return 0;}
+int main(){
+    contracts();network_pacing();input_batch_scopes();
+    for(bool deferInputs:{false,true})for(unsigned mode=0;mode<5;++mode)simulation(mode,deferInputs);
+    return 0;
+}
 #endif

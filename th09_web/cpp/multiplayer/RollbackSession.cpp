@@ -134,17 +134,29 @@ double RollbackSession::PacedElapsedMs(double elapsedMs) {
     phaseDebtMs_ -= used;
     return elapsedMs - used;
 }
-bool RollbackSession::Pump(std::uint64_t now, bool expectsInput,std::uint64_t measurementNowUs) {
+bool RollbackSession::Pump(std::uint64_t now, bool expectsInput,std::uint64_t measurementNowUs,
+                           bool deferOrdinaryInput) {
     if(failed_)return false;
     if(measured_&&!PumpStartup(now,measurementNowUs))return false;
     if(measuring_)return true;
     if (!configured_ || failed_) return false;
-    if (!channel_.Pump(gate_, core_, now, expectsInput && gate_.CanStart())) return Fail(channel_.ErrorText());
+    // Only a frontier capture already due at entry can replace Pump's older
+    // ordinary input packet. Never hold ACKs through a replay or startup wait.
+    const bool captureFollows = deferOrdinaryInput && expectsInput &&
+        mode_ == Netplay::AdonisMode::Rollback && NeedsCapture();
+    if (!channel_.Pump(gate_, core_, now, expectsInput && gate_.CanStart(), captureFollows)) return Fail(channel_.ErrorText());
     if (invalidInput_) return Fail("Invalid TH09 peer input");
     // Drain received packets before measuring shortage: a slow local callback
     // must not mistake queued, already available input for a network deficit.
     UpdateNetworkPacing(now, expectsInput);
     return !failed_;
+}
+bool RollbackSession::FlushDeferredInputs(std::uint64_t now) {
+    // Even a rejected capture must finish the old ACK/retransmit obligation.
+    // Keep the original title failure when the flush also reports an error.
+    if (channel_.FlushDeferredInputs(core_, now)) return true;
+    if (!failed_) Fail(channel_.ErrorText());
+    return false;
 }
 bool RollbackSession::Verify(std::uint32_t frame,std::uint32_t hash) {
     auto& slot=hashes_[(frame/120)%hashes_.size()];

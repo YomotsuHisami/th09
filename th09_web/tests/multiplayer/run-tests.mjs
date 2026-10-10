@@ -11,7 +11,11 @@ const sdk=process.env.WASI_SDK_BIN;
 if(!sdk)throw Error('Set WASI_SDK_BIN to the workspace WASI SDK bin directory');
 const compiler=resolve(sdk,process.platform==='win32'?'clang++.exe':'clang++');
 if(!existsSync(compiler))throw Error('WASI compiler not found');
-const out=resolve(root,'artifacts/multiplayer-tests');mkdirSync(out,{recursive:true});
+const runLabel=process.env.RUN_LABEL;
+if(runLabel&&!/^[A-Za-z0-9_-]+$/.test(runLabel))throw Error('Invalid component run label');
+const out=resolve(root,'artifacts/multiplayer-tests',runLabel||'');
+if(runLabel&&existsSync(out))throw Error('Retained component run already exists: '+runLabel);
+mkdirSync(out,{recursive:true});
 const flags=['-std=c++17','-O2','-g','-ffp-contract=off','-fno-exceptions',
   '-I'+resolve(common,'include'),'-I'+resolve(root,'cpp/multiplayer'),
 ];

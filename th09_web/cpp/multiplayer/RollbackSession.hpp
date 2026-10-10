@@ -17,7 +17,9 @@ public:
     const Netplay::AdonisStartup& Startup() const {return startup_;}
     void Clear();
     bool Verify(std::uint32_t frame,std::uint32_t hash);
-    bool Pump(std::uint64_t now, bool expectsInput = true, std::uint64_t measurementNowUs = 0);
+    bool Pump(std::uint64_t now, bool expectsInput = true, std::uint64_t measurementNowUs = 0,
+              bool deferOrdinaryInput = false);
+    bool FlushDeferredInputs(std::uint64_t now);
     bool NeedsCapture() const;
     bool Capture(const Netplay::FrameInput&, std::uint64_t now);
     Netplay::FrameDecision Prepare() const;

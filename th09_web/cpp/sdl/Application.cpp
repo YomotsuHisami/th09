@@ -399,13 +399,15 @@ TH09_EXPORT("th09_rollback_begin") u32 th09_rollback_begin(u32 seed,u32 side,u32
     if(!probe->tick_title(0,0,0,false)||probe->in_title)return 0;
     return th09_rollback_enable(seed,side,idLow,idHigh,abi,inputDelay);
 }
-TH09_EXPORT("th09_rollback_pump") u32 th09_rollback_pump(){
+u32 pump_rollback_transport(bool deferOrdinaryInput){
     TH09_PERF_SCOPE(network_cost,NetworkPump);
     if(!rollback_active)return 0;
     const double now=emscripten_get_now();
-    if(!rollback.Pump(std::uint64_t(now),network.active,std::uint64_t(now*1000))){probe->error=rollback.Error();return 0;}
+    if(!rollback.Pump(std::uint64_t(now),network.active,std::uint64_t(now*1000),deferOrdinaryInput)){probe->error=rollback.Error();return 0;}
     return rollback.Ready()?2:1;
 }
+// The independent timer remains a complete receive/send/repair pump.
+TH09_EXPORT("th09_rollback_pump") u32 th09_rollback_pump(){return pump_rollback_transport(false);}
 TH09_EXPORT("th09_measured_begin") u32 th09_measured_begin(u32 seed,u32 side,u32 difficulty,u32 left,u32 right,
                                                           u32 idLow,u32 idHigh,u32 abi,u32 requestedDelay,u32 reserve){
     if(rollback_active || (requestedDelay!=Netplay::AdonisStartup::Automatic&&requestedDelay>9) ||
@@ -476,8 +478,17 @@ u32 rollback_tick(u32 render){
     TH09_PERF_SCOPE(rollback_cost,RollbackTick);
     // Recovery and transport work consume the same callback budget as replay.
     const double start=emscripten_get_now();
-    if(!th09_rollback_pump())return 0;
-    if(!rollback.Ready())return 2;
+    bool deferOrdinaryInput=true;
+#if TH09_DEVELOPMENT_HARNESS
+    deferOrdinaryInput=rollback.Frame()<rollback_test_limit;
+#endif
+    const auto pumped=pump_rollback_transport(deferOrdinaryInput);
+    const auto flush=[](){
+        if(!rollback.FlushDeferredInputs(std::uint64_t(emscripten_get_now()))){probe->error=rollback.Error();return false;}
+        return true;
+    };
+    if(!pumped){flush();return 0;}
+    if(!rollback.Ready()){if(!flush())return 0;return 2;}
     const auto capture=[](){
 #if TH09_DEVELOPMENT_HARNESS
         if(rollback.Frame()>=rollback_test_limit)return true;
@@ -492,7 +503,11 @@ u32 rollback_tick(u32 render){
     // Sample the visible frontier once, before recovery can span callbacks.
     // The peer receives this input while we reconcile; historical ticks reuse
     // retained packets and never consume physical input or gesture edges.
-    if(!capture())return 0;
+    // Complete the old send obligation even when capture is rejected. All
+    // deferral ends here, before Restore, Prepare, or a callback budget exit.
+    const bool captured=capture();
+    const bool flushed=flush();
+    if(!captured||!flushed)return 0;
     auto correction=rollback.RollbackFrame();
     if(correction!=Netplay::INVALID_FRAME){
         TH09_PERF_SCOPE(restore_cost,Restore);
