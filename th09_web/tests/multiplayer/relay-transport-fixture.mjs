@@ -5,11 +5,14 @@ import {resolve} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {createRequire} from 'node:module';
 import {installRelayTransportProbe} from './relay-transport-probe.mjs';
+import {relayRtcTimeoutConfiguration} from './relay-startup-probe.mjs';
 
 if(process.env.EAGLER_NETPLAY_RELAY_HOST!=='127.0.0.1'||!process.env.TH09_RELAY_SOURCE||!process.send)throw Error('Relay diagnostics require an explicitly owned loopback child with IPC');
 const source=resolve(process.env.TH09_RELAY_SOURCE),config=JSON.parse(process.env.TH09_RELAY_TRACE_CONFIG||'{}');
 const sha=path=>createHash('sha256').update(readFileSync(path)).digest('hex');
 const sourceIdentity={relaySource:source,relaySha256:sha(source),probeSha256:sha(fileURLToPath(new URL('./relay-transport-probe.mjs',import.meta.url))),fixtureSha256:sha(fileURLToPath(import.meta.url))};
+sourceIdentity.startupProbeSha256=sha(fileURLToPath(new URL('./relay-startup-probe.mjs',import.meta.url)));
+if(config.startupTrace){sourceIdentity.rtcTimeout=relayRtcTimeoutConfiguration(process.env);config.rtcTimeoutMs=sourceIdentity.rtcTimeout.rtcTimeoutMs;}
 // All injected waiting belongs to the diagnostic wrapper. Do not stack a hidden
 // service delay/drop with it. Compatibility aliases must not contradict this.
 for(const [key,value] of Object.entries({EAGLER_NETPLAY_RELAY_DELAY_MS:'0',EAGLER_NETPLAY_RELAY_JITTER_MS:'0',EAGLER_NETPLAY_RELAY_DROP_EVERY:'0',

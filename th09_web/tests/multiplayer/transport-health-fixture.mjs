@@ -52,12 +52,51 @@ export function assertHealthPacket(data, plans, expectedSender, seed) {
     throw Error('Health packet differs from complete deterministic bytes');
   return parsed;
 }
+// Small optional observer shared with the Node constructor contract test.
+// It never reads constructor arguments, SDP, candidate data or error messages.
+export function createHealthConstructorTrace(now,limit=96) {
+  if(!Number.isInteger(limit)||limit<1)throw Error('Invalid constructor trace limit');
+  const events=[],counts={entered:0,returned:0,threw:0,observerErrors:0};let overflow=0;
+  const names=['Error','TypeError','RangeError','ReferenceError','SyntaxError','AbortError','InvalidAccessError',
+    'InvalidStateError','NotAllowedError','NotFoundError','NotReadableError','NotSupportedError','OperationError',
+    'RTCError','SecurityError','TimeoutError','UnknownError'];
+  function record(call,event,cause){
+    try{
+      const at=now();if(!Number.isFinite(at))throw Error('clock');
+      let errorName=null;
+      if(event==='threw'){let name;try{name=cause?.name;}catch{}errorName=names.includes(name)?name:'UnknownError';}
+      if(events.length<limit)events.push({id:events.length,call,event,at,errorName});else ++overflow;
+    }catch{++counts.observerErrors;}
+  }
+  return {
+    enter(){const call=counts.entered++;record(call,'enter');return call;},
+    returned(call){++counts.returned;record(call,'returned');},
+    threw(call,cause){++counts.threw;record(call,'threw',cause);},
+    snapshot(constructorCurrent){return {version:1,enabled:true,limit,overflow,counts:{...counts},
+      valid:constructorCurrent&&!overflow&&!counts.observerErrors&&counts.entered===counts.returned+counts.threw,
+      coverage:{exercised:counts.entered>0},identity:{constructorCurrent},events:events.map(row=>({...row})),
+      scope:'performance.now() immediately around existing super(...args), before local channel observer attachment. The captured NativePC may include preinstalled browser/page wrappers. No additional connection, timer, proxy change, constructor argument or error message capture.'};}
+  };
+}
+export function healthPeerConnectionObserver(NativePC,observeChannel,trace=null) {
+  return class ObservedPeerConnection extends NativePC {
+    constructor(...args){
+      const call=trace?.enter();
+      try{super(...args);}catch(cause){trace?.threw(call,cause);throw cause;}
+      trace?.returned(call);
+      this.addEventListener('datachannel',event=>observeChannel(event.channel,'rtc'));
+    }
+    createDataChannel(...args){const channel=super.createDataChannel(...args);observeChannel(channel,'rtc');return channel;}
+  };
+}
 export async function installTransportHealthPage(options) {
   if(globalThis.__transportHealth)throw Error('Health fixture already installed');
   const {side,frames,seed,route,sources,relayUrl,pollMs,blockAtMs,blockMs,blockSide}=options;
+  const rtcConstructorTrace=options.rtcConstructorTrace===true;
   const plans=healthSchedule(frames),now=()=>performance.now();
   const clock=()=>{const before=now(),epochMs=Date.now(),after=now();return {timeOrigin:performance.timeOrigin,before,epochMs,after};};
   const started=clock(),packets=[],events=[],channels=[],heartbeats=[],rafs=[],blocks=[],states=[],rtc=[],errors=[];
+  const constructorTrace=rtcConstructorTrace?createHealthConstructorTrace(now):null;
   const limits={packets:frames*4+64,events:frames*20+512,heartbeats:18000,rafs:24000,states:512,rtc:256,errors:128,channels:32};
   const overflow=Object.fromEntries(Object.keys(limits).map(key=>[key,0]));
   const counts={api:0,send:0,message:0,pollCopy:0,emptyPolls:0,unrecognizedBinary:0,nonBinarySend:0,
@@ -82,6 +121,7 @@ export async function installTransportHealthPage(options) {
       meta.bufferedBefore??-1,meta.bufferedAfter??-1,meta.result??-1,meta.queueBefore??-1,meta.queueAfter??-1,+!!meta.threw]);
   }
   const NativeWS=globalThis.WebSocket,NativePC=globalThis.RTCPeerConnection;
+  let observedPeerConnection=null;
   const originalWsSend=NativeWS.prototype.send,originalDcSend=globalThis.RTCDataChannel?.prototype.send;
   function buffered(channel){return typeof channel?.bufferedAmount==='number'?channel.bufferedAmount:-1;}
   function channelInfo(channel,kind,id) {
@@ -117,11 +157,8 @@ export async function installTransportHealthPage(options) {
   NativeWS.prototype.send=sendHook(originalWsSend);
   if(route==='rtc'){
     if(typeof NativePC!=='function'||typeof originalDcSend!=='function')throw Error('RTC unavailable before health setup');
-    class ObservedPeerConnection extends NativePC {
-      constructor(...args){super(...args);this.addEventListener('datachannel',event=>observeChannel(event.channel,'rtc'));}
-      createDataChannel(...args){const channel=super.createDataChannel(...args);observeChannel(channel,'rtc');return channel;}
-    }
-    globalThis.RTCPeerConnection=ObservedPeerConnection;
+    observedPeerConnection=healthPeerConnectionObserver(NativePC,observeChannel,constructorTrace);
+    globalThis.RTCPeerConnection=observedPeerConnection;
     globalThis.RTCDataChannel.prototype.send=sendHook(originalDcSend);
   }else globalThis.RTCPeerConnection=undefined;
   const heap=new Uint8Array(65536);globalThis.HEAPU8=heap;
@@ -195,11 +232,12 @@ export async function installTransportHealthPage(options) {
     if(nextPlan===plans.length){done=true;observeState();return;}
     sendTimer=setTimeout(sendDue,Math.max(0,startAt+plans[nextPlan].dueMs-now()));
   }
-  const snapshot=()=>({schema:'th09/transport-health-page/1',side,options:{frames,seed,route,pollMs,blockAtMs,blockMs,blockSide},
+  const snapshot=()=>({schema:'th09/transport-health-page/1',side,options:{frames,seed,route,pollMs,blockAtMs,blockMs,blockSide,rtcConstructorTrace},
     clock:{started,armed:armedClock,stopped:stoppedClock},running,armed,done,startAt,startEpochMs,stopAt,nextPlan,
     columns:{packets:packetColumns,events:eventColumns,phases:phaseNames,lanes:laneNames},
     limits,overflow:{...overflow},counts:{...counts},packets:packets.slice(),events:events.slice(),channels:channels.slice(),
     heartbeats:heartbeats.slice(),rafs:rafs.slice(),blocks:blocks.slice(),states:states.slice(),rtc:rtc.slice(),errors:errors.slice(),
+    rtcConstructorTrace:constructorTrace?{...constructorTrace.snapshot(globalThis.RTCPeerConnection===observedPeerConnection),timeOrigin:started.timeOrigin}:null,
     current:channelSnapshot(),scope:'Actual shared browser transport functions, JS Uint8Array ABI storage; no WASM, C++ SessionChannel, native input repair policy, game, audio or Draw. Message hooks run before the shared handler; poll-copy uses the real JS transport body.'});
   let armedClock=null,stoppedClock=null;
   globalThis.__transportHealth={

@@ -11,7 +11,7 @@ import {execFileSync} from 'node:child_process';
 import {createHash,randomBytes} from 'node:crypto';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {setTimeout as delay} from 'node:timers/promises';
-import {healthSchedule,healthPacket,parseHealthPacket,assertHealthPacket} from './transport-health-fixture.mjs';
+import {healthSchedule,healthPacket,parseHealthPacket,assertHealthPacket,createHealthConstructorTrace,healthPeerConnectionObserver} from './transport-health-fixture.mjs';
 
 const here=path.dirname(fileURLToPath(import.meta.url));
 const project=path.resolve(here,'../../..');
@@ -110,6 +110,11 @@ function checkPeer(raw,parameters,errors){
   const messages=events.filter(row=>row.phase===2),copies=events.filter(row=>row.phase===3);
   add(raw.done&&raw.nextPlan===expected,'deterministic schedule incomplete');
   add(raw.errors.length===0,'browser fixture errors: '+JSON.stringify(raw.errors));
+  if(parameters.rtcConstructorTrace){
+    const trace=raw.rtcConstructorTrace;
+    add(trace?.valid===true,'RTC constructor trace invalid: '+JSON.stringify({counts:trace?.counts,overflow:trace?.overflow,identity:trace?.identity}));
+    add(trace?.coverage?.exercised===true,'RTC constructor trace was not exercised');
+  }
   add(Object.values(raw.overflow).every(value=>value===0),'trace overflow; incomplete observation');
   add(raw.counts.invalidPayloads===0,'received payload differs from complete deterministic bytes');
   add(raw.counts.unrecognizedBinary===0,'unrecognized binary transport data');
@@ -217,6 +222,8 @@ function configFromEnv(){
   const args=process.argv.slice(2),relay=args.includes('--relay'),rtc=args.includes('--rtc');
   assert(relay!==rtc&&args.every(arg=>arg==='--relay'||arg==='--rtc'),'Specify exactly one of --relay or --rtc');
   const route=rtc?'rtc':'relay',frames=envNumber('HEALTH_FRAMES',720,60,3600);
+  const rtcConstructorTrace=process.env.HEALTH_RTC_CONSTRUCTOR_TRACE==='1';
+  assert(!rtcConstructorTrace||rtc,'HEALTH_RTC_CONSTRUCTOR_TRACE requires --rtc');
   const impairmentSite=process.env.HEALTH_IMPAIRMENT_SITE??'none';
   assert(['none','relay'].includes(impairmentSite),'HEALTH_IMPAIRMENT_SITE must be none or relay');
   assert(!(route==='rtc'&&impairmentSite==='relay'),'Relay delay cannot be claimed as RTC input impairment');
@@ -227,7 +234,8 @@ function configFromEnv(){
     cpuRates:[1,envNumber('HEALTH_CPU_RATE',4,1,20,false)],pollMs:envNumber('HEALTH_POLL_MS',4,1,100),
     heartbeatMs:10,drainMs:envNumber('HEALTH_DRAIN_MS',2000,500,10000),blockMs,blockAtMs,
     blockSide:envNumber('HEALTH_BLOCK_SIDE',1,0,1),impairmentSite,hostLoad:process.env.HOST_LOAD==='1',
-    browserOnlyProxyBypass:process.env.HEALTH_PROXY_BYPASS==='1',
+    browserOnlyProxyBypass:process.env.HEALTH_PROXY_BYPASS==='1',rtcConstructorTrace,
+    gpuFlags:process.env.HEALTH_GPU_FLAGS==='1',
     injection:{inject:impairmentSite==='relay',
       delay:impairmentSite==='relay'?envNumber('HEALTH_DELAY_MS',39,0,2000):0,
       jitter:impairmentSite==='relay'?envNumber('HEALTH_JITTER_MS',5,0,1000):0,
@@ -283,8 +291,10 @@ async function run(){
       bytesPerPacket:56,syntheticInputPayload:true,fixedLogicalSchedule:true,allDuePlansRetained:true,
       synchronousApplicationSend:true,clientImpairmentTimer:false,routeScope:'real shared relay/signaling; neutral transport-only room without product lobby admission',
       rtcScope:'two local browser processes on the same physical host; selected host/srflx pair is not public or remote acceptance',
+      gpuScope:'Optional GPU/ANGLE launch arguments only; no WebGL context is created and no GPU renderer is measured or validated. Recorded browserArgs are arguments supplied to launchBrowser, excluding Playwright defaults.',
       abiScope:'shared EM_JS bodies with JavaScript Uint8Array memory, no WebAssembly, C++ SessionChannel/automatic repair policy, game, audio, drawing or assets'},
     identity:{commonGit,expectedCommonHead:expectedHead,relayGit:gitIdentity(path.dirname(relayPath)),files:identities,
+      rtcConstructorTraceSourceSha256:parameters.rtcConstructorTrace?identities[1].sha256:null,
       functionBodies:Object.fromEntries(Object.entries(sources).map(([name,value])=>[name,{args:value.args,sha256:value.sha256}]))},
     browsers:[],peers:[],relayTrace:null,hostLoad:null,summary:null,errors:[],
     lifecycle:{events:[],relayStdout:'',relayStderr:'',relayOutputOverflowBytes:0,relayExit:null},
@@ -330,6 +340,8 @@ async function run(){
     report.fixture.origin=origin;report.fixture.relayUrl=relayUrl;
     const browserArgs=['--disable-background-timer-throttling','--disable-backgrounding-occluded-windows','--disable-renderer-backgrounding'];
     if(parameters.browserOnlyProxyBypass)browserArgs.push('--no-proxy-server');
+    if(parameters.gpuFlags)browserArgs.push('--enable-gpu','--use-gl=angle','--use-angle=d3d11');
+    report.fixture.browserArgs=browserArgs.slice();
     for(let side=0;side<2;++side){
       const browser=await launchBrowser({headless:true,args:browserArgs});browsers.push(browser);
       const page=await browser.newPage();pages.push(page);const requests=[];
@@ -347,7 +359,8 @@ async function run(){
         const response=await fetch('/transport.json');if(!response.ok)throw Error('Missing frozen transport bodies');
         return installTransportHealthPage({...options,sources:await response.json()});
       },{side,frames:parameters.frames,seed:parameters.seed,route:parameters.route,relayUrl,
-        pollMs:parameters.pollMs,blockAtMs:parameters.blockAtMs,blockMs:parameters.blockMs,blockSide:parameters.blockSide})));
+        pollMs:parameters.pollMs,blockAtMs:parameters.blockAtMs,blockMs:parameters.blockMs,blockSide:parameters.blockSide,
+        rtcConstructorTrace:parameters.rtcConstructorTrace})));
     await waitFor(async()=>{if(relayClosed)throw Error('Owned relay ended during route selection');
       const result=await Promise.all(pages.map(page=>page.evaluate(()=>({ready:globalThis.__transportHealth?.ready(),
         state:globalThis.__eaglerPeerTransport?.route,failed:globalThis.__eaglerPeerTransport?.failed,disconnected:globalThis.__eaglerPeerTransport?.disconnected}))));
@@ -413,7 +426,55 @@ async function run(){
     if(!report.passed)process.exitCode=1;
   }
 }
+function constructorContractTest(){
+  let time=0;const observed=[],nativeCalls=[],channel={marker:true};
+  const trace=createHealthConstructorTrace(()=>time);
+  class NativePC {
+    constructor(...args){nativeCalls.push({args,target:new.target,receiver:this});time+=37;}
+    addEventListener(name,callback){this.listener={name,callback,at:time};time+=3;}
+    createDataChannel(...args){this.dataChannelArgs=args;return channel;}
+  }
+  const Observer=healthPeerConnectionObserver(NativePC,(...args)=>observed.push(args),trace);
+  const configuration={},second={},first=new Observer(configuration,second);
+  assert(first instanceof NativePC&&first instanceof Observer);
+  assert.equal(nativeCalls[0].target,Observer);assert.equal(nativeCalls[0].receiver,first);
+  assert.equal(nativeCalls[0].args[0],configuration);assert.equal(nativeCalls[0].args[1],second);
+  assert.deepEqual(trace.snapshot(true).events.map(e=>[e.call,e.event,e.at]),[[0,'enter',0],[0,'returned',37]]);
+  assert.equal(first.listener.name,'datachannel');assert.equal(first.listener.at,37);
+  assert.equal(first.createDataChannel('input',configuration),channel);
+  assert.deepEqual(first.dataChannelArgs,['input',configuration]);
+  first.listener.callback({channel});
+  assert.deepEqual(observed,[[channel,'rtc'],[channel,'rtc']]);
+  class Derived extends Observer{}
+  new Derived(configuration);
+  assert.equal(nativeCalls[1].target,Derived);
+  const failure=Object.assign(new Error('must not be retained'),{name:'OperationError'});
+  class ThrowingPC {constructor(){time+=11;throw failure;}}
+  const ThrowingObserver=healthPeerConnectionObserver(ThrowingPC,()=>{},trace);
+  assert.throws(()=>new ThrowingObserver(),error=>error===failure);
+  const complete=trace.snapshot(true);
+  assert.deepEqual(complete.counts,{entered:3,returned:2,threw:1,observerErrors:0});
+  assert.equal(complete.events.at(-1).event,'threw');assert.equal(complete.events.at(-1).errorName,'OperationError');
+  assert.equal(complete.valid,true);assert.equal(trace.snapshot(false).valid,false);
+  assert(!JSON.stringify(complete).includes('must not be retained'));
+  const bounded=createHealthConstructorTrace(()=>time,2);
+  const BoundedObserver=healthPeerConnectionObserver(NativePC,()=>{},bounded);
+  new BoundedObserver();new BoundedObserver();
+  assert.equal(bounded.snapshot(true).events.length,2);assert.equal(bounded.snapshot(true).overflow,2);
+  assert.equal(bounded.snapshot(true).valid,false);
+  const brokenClock=createHealthConstructorTrace(()=>{throw Error('observer clock');});
+  assert(new (healthPeerConnectionObserver(NativePC,()=>{},brokenClock))() instanceof NativePC);
+  assert.throws(()=>new (healthPeerConnectionObserver(ThrowingPC,()=>{},brokenClock))(),error=>error===failure);
+  assert.equal(brokenClock.snapshot(true).counts.observerErrors,4);
+  const OffObserver=healthPeerConnectionObserver(NativePC,()=>{});
+  const off=new OffObserver(configuration);assert(off instanceof NativePC);
+  assert.equal(nativeCalls.at(-1).target,OffObserver);
+  return {passed:true,checks:['arguments','receiver','newTarget','subclass','entry-return-before-listener',
+    'createDataChannel-return','original-exception','bounded-overflow','observer-error-isolation','default-off']};
+}
+
 function selfTest(){
+  const constructorContract=constructorContractTest();
   const plans=healthSchedule(720);
   assert.equal(plans.length,1440);assert.equal(plans.at(-1).dueMs,719*1000/60);
   assert.deepEqual(healthSchedule(720),plans);
@@ -438,7 +499,7 @@ function selfTest(){
     assert.deepEqual(bodies.eagler_peer_poll_copy.args,['out','capacity']);
   }
   console.log(JSON.stringify({passed:true,scope:'Node pure packet/schedule/FIFO/optional source parsing; no browser, relay process, network, WASM or benchmark',
-    packetsChecked:plans.length*2,parsedFunctions:bodies?Object.keys(bodies):[]}));
+    packetsChecked:plans.length*2,parsedFunctions:bodies?Object.keys(bodies):[],constructorContract}));
 }
 if(process.argv.includes('--self-test'))selfTest();
 else run().catch(error=>{console.error(error.stack||String(error));process.exitCode=1;});

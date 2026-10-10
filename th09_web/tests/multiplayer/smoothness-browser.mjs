@@ -3,10 +3,11 @@
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
 import {createHash,randomUUID} from 'node:crypto';
-import {mkdirSync,readFileSync,writeFileSync} from 'node:fs';
+import {mkdirSync,readFileSync,realpathSync,statSync,writeFileSync} from 'node:fs';
 import net from 'node:net';
-import {resolve} from 'node:path';
+import {basename,resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {chromium} from 'playwright';
 import {presentationServer} from '../../scripts/presentation-server.mjs';
 import {launchBrowser} from '../../../th10_web/scripts/native/browser-launch.mjs';
 import {installAudioOutputProbe} from './audio-output-probe.mjs';
@@ -15,6 +16,7 @@ import {startHostLoadProbe} from './host-load-probe.mjs';
 import {installNetworkTransportProbe} from './network-transport-probe.mjs';
 import {startRelayDiagnosticProcess} from './relay-transport-controller.mjs';
 import {installLiveCallbackCostProbe} from './callback-cost-probe.mjs';
+import {installStartupTransportProbe} from './startup-transport-probe.mjs';
 
 const root=fileURLToPath(new URL('../../',import.meta.url));
 const label=process.env.RUN_LABEL||'smoothness';
@@ -25,9 +27,23 @@ const limit=integer('FRAMES',1800,300,18000),delay=integer('DELAY_MS',39,0,200),
 const slow=integer('CPU_RATE',1,1,8),dropEvery=integer('DROP_EVERY',0,0,1000);
 const release=process.argv.includes('--release'),profile=process.env.PROFILE_CPU==='1',fallback=process.argv.includes('--relay');
 const liveCost=process.env.LIVE_COST==='1';assert.ok(!liveCost||!release,'LIVE_COST requires a DEV build; release is unsupported');
+const startupTrace=process.env.STARTUP_TRACE==='1';
+const headedControl=process.env.HEADED_CONTROL==='1';
+const browserArgs=['--enable-gpu','--use-gl=angle','--use-angle=d3d11','--autoplay-policy=no-user-gesture-required'];
+// Keep Playwright's other headless defaults while changing only the window mode.
+const headlessAuxiliaryArgs=['--hide-scrollbars','--mute-audio','--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4'];
+const browserLaunchOptions={args:browserArgs};
+if(headedControl){
+ const executablePath=realpathSync(chromium.executablePath());
+ assert.equal(process.platform,'win32','Headed control currently pins the verified Windows normal Chrome');
+ assert.equal(basename(executablePath).toLowerCase(),'chrome.exe','Headed control requires normal Chrome, not headless shell');
+ if(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE)assert.equal(realpathSync(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE).toLowerCase(),executablePath.toLowerCase(),'Headed control rejects a different executable override');
+ Object.assign(browserLaunchOptions,{headless:false,executablePath,args:[...browserArgs,...headlessAuxiliaryArgs]});
+}
 const impairmentSite=process.env.IMPAIRMENT_SITE||'client';assert.ok(['client','relay','none'].includes(impairmentSite),'IMPAIRMENT_SITE');
-const relayDiagnostics=process.env.RELAY_TRACE==='1'||impairmentSite==='relay'||(fallback&&impairmentSite==='none');
-assert.ok(!relayDiagnostics||fallback,'Relay gameplay trace requires --relay; RTC uses signaling only');
+const relayInputDiagnostics=process.env.RELAY_TRACE==='1'||impairmentSite==='relay'||(fallback&&impairmentSite==='none');
+const relayDiagnostics=relayInputDiagnostics||startupTrace;
+assert.ok(!relayInputDiagnostics||fallback,'Relay gameplay trace requires --relay; RTC uses signaling only');
 assert.ok(impairmentSite!=='relay'||fallback,'Relay impairment cannot delay RTC data channels');
 const expectedRtcPath=process.env.EXPECT_RTC_PATH||'any';assert.ok(['any','direct','turn'].includes(expectedRtcPath),'EXPECT_RTC_PATH');
 assert.ok(!fallback||expectedRtcPath==='any','RTC candidate assertion requires RTC transport');
@@ -47,6 +63,7 @@ const out=resolve(root,'artifacts/multiplayer-tests');mkdirSync(out,{recursive:t
 const sha=path=>createHash('sha256').update(readFileSync(path)).digest('hex');
 const wasmPath=resolve(artifactDirectory,release?'th09.wasm':'th09-presentation.wasm');
 const identity={wasm:sha(wasmPath),harness:sha(fileURLToPath(import.meta.url)),loader:sha(resolve(artifactDirectory,release?'th09.mjs':'th09-presentation.mjs'))};
+if(headedControl)identity.headedBrowserExecutable={selection:'playwright.chromium.executablePath; existing normal Windows chrome.exe',basename:basename(browserLaunchOptions.executablePath),bytes:statSync(browserLaunchOptions.executablePath).size,sha256:sha(browserLaunchOptions.executablePath),launcherSha256:sha(fileURLToPath(new URL('../../../th10_web/scripts/native/browser-launch.mjs',import.meta.url)))};
 const relayPath=resolve(process.env.EAGLER_RELAY_SOURCE||'D:/workspace/eagler/eagler-touhou/server/netplay-relay.mjs');
 identity.relay=sha(relayPath);identity.shell=sha(resolve(root,'sdl-runtime/shared-netplay.mjs'));identity.presentationHarness=sha(resolve(root,'tests/browser/presentation.html'));
 if(audioOutput)identity.audioProbe=sha(fileURLToPath(new URL('./audio-output-probe.mjs',import.meta.url)));
@@ -54,33 +71,113 @@ if(responsiveness)identity.responsivenessProbe=sha(fileURLToPath(new URL('./resp
 if(hostLoad)identity.hostLoadProbe=sha(fileURLToPath(new URL('./host-load-probe.mjs',import.meta.url)));
 if(networkTrace)identity.networkTransportProbe=sha(fileURLToPath(new URL('./network-transport-probe.mjs',import.meta.url)));
 if(liveCost)identity.callbackCostProbe=sha(fileURLToPath(new URL('./callback-cost-probe.mjs',import.meta.url)));
+if(startupTrace)identity.startupTransportProbe=sha(fileURLToPath(new URL('./startup-transport-probe.mjs',import.meta.url)));
 if(relayDiagnostics)for(const [key,file] of [['relayTransportProbe','relay-transport-probe.mjs'],['relayTransportFixture','relay-transport-fixture.mjs'],['relayTransportController','relay-transport-controller.mjs']])identity[key]=sha(fileURLToPath(new URL('./'+file,import.meta.url)));
+if(relayDiagnostics)identity.relayStartupProbe=sha(fileURLToPath(new URL('./relay-startup-probe.mjs',import.meta.url)));
 const port=await new Promise(r=>{const s=net.createServer();s.listen(0,'127.0.0.1',()=>{const p=s.address().port;s.close(()=>r(p));});});
 const hostProbe=hostLoad?startHostLoadProbe():null;hostProbe?.mark('relay-setup-start');
-const diagnosticRelay=relayDiagnostics?startRelayDiagnosticProcess({relayPath,port,config:{inject:impairmentSite==='relay',delay,jitter,burstAt,burstFor,burstDelay}}):null;
+const diagnosticRelay=relayDiagnostics?startRelayDiagnosticProcess({relayPath,port,config:{inject:impairmentSite==='relay',delay,jitter,burstAt,burstFor,burstDelay,startupTrace}}):null;
 const relay=diagnosticRelay?.process||spawn(process.execPath,[relayPath],{windowsHide:true,env:{...process.env,EAGLER_NETPLAY_RELAY_HOST:'127.0.0.1',EAGLER_NETPLAY_RELAY_PORT:String(port),EAGLER_NETPLAY_STUN_URLS:''},stdio:['ignore','pipe','pipe']});
 if(Number.isInteger(relay.pid))hostProbe?.registerKnownProcess(relay.pid,'netplay-relay');
 hostProbe?.mark('relay-spawned');
 let relayLog='',host,retainedResults,relayTraceSnapshot,relayTraceError;const browsers=[],pages=[],sessions=[],errors=[];
 const parameters={limit,delay,jitter,slow,dropEvery,release,profile,fallback,inputMode,audioOutput,responsiveness,burstAt,burstFor,burstDelay,rafDiagnostics,hostLoad,networkTrace,impairmentSite,relayDiagnostics,expectedRtcPath,liveCost,clientSendMode:impairmentSite==='client'?'timer':'synchronous',burstClock:impairmentSite==='relay'?'relay-first-nonempty-input-receive':'browser-active',cpuThrottle:{ratesBySide:[1,slow],configuredAfter:'openProbe',scope:'openProbe and after-open counters precede CPU throttling; subsequent netplay setup and first game callback use the configured per-side rates.'}};
 const distribution=values=>{const a=values.slice().sort((a,b)=>a-b);return {count:a.length,total:a.reduce((s,n)=>s+n,0),p50:a[Math.floor(a.length*.5)]??null,p95:a[Math.floor(a.length*.95)]??null,p99:a[Math.floor(a.length*.99)]??null,max:a.at(-1)??null,over25ms:a.filter(n=>n>25).length,over50ms:a.filter(n=>n>50).length,over100ms:a.filter(n=>n>100).length,over250ms:a.filter(n=>n>250).length};};
+parameters.startupTrace=startupTrace;parameters.relayInputDiagnostics=relayInputDiagnostics;
+parameters.headedControl=headedControl;
+if(headedControl)parameters.headedLaunch={headless:false,explicitArgs:browserLaunchOptions.args,preservedHeadlessAuxiliaryArgs:headlessAuxiliaryArgs,scope:'Window-mode environment control, not a production code change; proxy, input, audio/context, CPU setup, and native GPU arguments are unchanged.'};
+const headedControlEvidence=headedControl?{launches:[],windows:[],windowObservationLimit:6,scope:'Only the two browsers created by this harness. CDP supplies the unique browser PID; CIM reads only that PID. Save only command-line SHA256 and allowlisted flags, never raw command lines, executable/profile paths, or process lists. Missing identity observation is explicit and cannot establish a matched environment control. Window bounds, visibility/focus and existing lifecycle events do not prove physical scanout, continuous foreground visibility, or non-overlap. No window is moved or brought to front.'}:undefined;
+function splitWindowsCommandLine(line){
+ assert.ok(typeof line==='string'&&line.length>0&&line.length<=32768,'Browser command line unavailable or oversized');
+ const args=[];let at=0;
+ while(at<line.length){
+  while(/[ \t]/.test(line[at]||'\n'))++at;
+  if(at===line.length)break;
+  let word='',quoted=false;
+  while(at<line.length&&(quoted||!/[ \t]/.test(line[at]))){
+   let slashes=0;while(line[at]==='\\'){++slashes;++at;}
+   if(line[at]==='"'){
+    word+='\\'.repeat(Math.floor(slashes/2));
+    if(slashes%2){word+='"';++at;}
+    else if(quoted&&line[at+1]==='"'){word+='"';at+=2;}
+    else{quoted=!quoted;++at;}
+   }else{word+='\\'.repeat(slashes);if(at<line.length&&(quoted||!/[ \t]/.test(line[at])))word+=line[at++];}
+  }
+  assert.ok(!quoted,'Browser command line has unmatched quoting');args.push(word);
+ }
+ return args;
+}
+async function readOwnedBrowserProcess(browserPid){
+ assert.ok(Number.isSafeInteger(browserPid)&&browserPid>0,'Invalid owned browser PID');
+ const script=`[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+try {
+ $th09Process = @(Get-CimInstance -ClassName Win32_Process -Filter 'ProcessId = ${browserPid}' -Property ProcessId,ExecutablePath,CommandLine -ErrorAction Stop)
+ if ($th09Process.Count -ne 1) { throw 'process-unavailable' }
+ $th09Process[0] | Select-Object ProcessId,ExecutablePath,CommandLine | ConvertTo-Json -Compress -ErrorAction Stop
+} catch { [Console]::Out.WriteLine('{"unavailable":"cim-query-failed"}') }`;
+ return await new Promise((accept,reject)=>{
+  const helper=spawn('powershell.exe',['-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')],{windowsHide:true,stdio:['ignore','pipe','ignore']});
+  if(Number.isInteger(helper.pid))hostProbe?.registerKnownProcess(helper.pid,'headed-identity-query');
+  let text='',done=false;
+  const finish=(error,value)=>{if(done)return;done=true;clearTimeout(timer);if(error)reject(error);else accept(value);};
+  const timer=setTimeout(()=>{helper.kill();finish(Error('owned-browser-cim-timeout'));},5000);
+  helper.stdout.setEncoding('utf8');helper.stdout.on('data',chunk=>{if(done)return;text+=chunk;if(text.length>131072){helper.kill();finish(Error('owned-browser-cim-output-limit'));}});
+  helper.on('error',()=>finish(Error('owned-browser-cim-start-failed')));
+  helper.on('close',code=>{
+   if(done)return;
+   if(code!==0)return finish(Error('owned-browser-cim-exit'));
+   try{const info=JSON.parse(text.replace(/^\uFEFF/,''));if(info.unavailable||info.ProcessId!==browserPid||typeof info.ExecutablePath!=='string'||typeof info.CommandLine!=='string')return finish(Error('owned-browser-cim-identity-unavailable'));finish(null,info);}
+   catch{finish(Error('owned-browser-cim-parse-failed'));}
+  });
+ });
+}
+async function recordHeadedLaunch(browser,side){
+ const row={side,observedAt:Date.now(),explicitArgs:browserLaunchOptions.args,method:'CDP SystemInfo.getProcessInfo browser PID + single-PID Win32_Process CIM',allowedArgs:[],observationAvailable:false,verified:false};headedControlEvidence.launches.push(row);
+ let cdp,stage='cdp-session';
+ try{
+  cdp=await browser.newBrowserCDPSession();stage='cdp-process-info';
+  const {processInfo}=await cdp.send('SystemInfo.getProcessInfo');
+  const matches=processInfo.filter(info=>info.type==='browser');row.browserProcessMatches=matches.length;
+  assert.equal(matches.length,1,'Owned browser PID is not unique');row.browserPid=matches[0].id;
+  stage='single-pid-cim';const info=await readOwnedBrowserProcess(row.browserPid);
+  stage='command-line-parse';const args=splitWindowsCommandLine(info.CommandLine);
+  row.commandLineSha256=createHash('sha256').update(info.CommandLine,'utf8').digest('hex');row.commandLineHashEncoding='UTF-8 of the exact Win32_Process.CommandLine string';
+  const allowed=new Set([...browserLaunchOptions.args,'--headless','--headless=new','--headless=old','--enable-automation','--disable-background-timer-throttling','--disable-backgrounding-occluded-windows','--disable-renderer-backgrounding','--disable-frame-rate-limit','--disable-gpu-vsync','--enable-unsafe-swiftshader','--no-sandbox']);
+  row.allowedArgs=args.filter(arg=>allowed.has(arg));row.omittedArgumentCount=args.length-row.allowedArgs.length;
+  row.executableMatches=realpathSync(info.ExecutablePath).toLowerCase()===browserLaunchOptions.executablePath.toLowerCase();
+  row.headlessSwitch=args.some(arg=>/^--headless(?:=|$)/.test(arg));
+  row.preservedAuxiliaryArgs=headlessAuxiliaryArgs.every(arg=>args.includes(arg));
+  row.requiredArgsPresent=browserLaunchOptions.args.every(arg=>args.includes(arg));row.observationAvailable=true;
+  row.verified=row.executableMatches&&!row.headlessSwitch&&row.preservedAuxiliaryArgs&&row.requiredArgsPresent;
+  assert.ok(row.verified,'Headed control launch did not retain the requested executable and auxiliary defaults');
+ }catch(error){row.errorName=String(error?.name||'Error');if(row.observationAvailable)throw error;row.unavailable={stage,errorName:row.errorName,code:/^owned-browser-cim-[a-z-]+$/.test(error?.message)?error.message:'observation-unavailable'};}
+ finally{row.observationMs=Date.now()-row.observedAt;if(cdp)await cdp.detach().catch(()=>{});}
+}
+async function recordHeadedWindow(page,cdp,side,stage){
+ const row={side,stage,observedAt:Date.now(),window:null,page:null,errors:[]};
+ if(headedControlEvidence.windows.length>=headedControlEvidence.windowObservationLimit)throw Error('Headed window observation overflow');
+ headedControlEvidence.windows.push(row);
+ try{row.window=await cdp.send('Browser.getWindowForTarget');}catch(error){row.errors.push({source:'window',name:String(error?.name||'Error')});}
+ try{row.page=await page.evaluate(()=>({at:performance.now(),timeOrigin:performance.timeOrigin,visibility:document.visibilityState,focus:document.hasFocus(),screenX,screenY,outerWidth,outerHeight,innerWidth,innerHeight,devicePixelRatio,screen:{width:screen.width,height:screen.height,availWidth:screen.availWidth,availHeight:screen.availHeight,availLeft:screen.availLeft,availTop:screen.availTop}}));}catch(error){row.errors.push({source:'page',name:String(error?.name||'Error')});}
+}
 try {
  await new Promise((accept,reject)=>{const timer=setTimeout(()=>reject(Error('relay startup timeout')),10000);relay.stdout.on('data',b=>{relayLog=(relayLog+b).slice(-32768);if(relayLog.includes('netplay relay listening')){clearTimeout(timer);accept();}});relay.stderr.on('data',b=>relayLog=(relayLog+b).slice(-32768));relay.on('error',reject);relay.on('exit',code=>reject(Error('relay exit '+code)));});
  hostProbe?.mark('relay-listening');
  host=await presentationServer(0,{release,artifactDirectory});hostProbe?.mark('presentation-server-ready');
  for(let side=0;side<2;++side){
   hostProbe?.mark(`browser-${side+1}-setup-start`);
-  const browser=await launchBrowser({args:['--enable-gpu','--use-gl=angle','--use-angle=d3d11','--autoplay-policy=no-user-gesture-required']});browsers.push(browser);
+  const browser=await launchBrowser(browserLaunchOptions);browsers.push(browser);
+  if(headedControl)await recordHeadedLaunch(browser,side);
   const page=await browser.newPage();pages.push(page);page.on('pageerror',e=>errors.push({side,error:e.stack}));
   if(audioOutput)await page.addInitScript(installAudioOutputProbe);
   if(responsiveness)await page.addInitScript(installResponsivenessProbe);
   if(liveCost)await page.addInitScript(installLiveCallbackCostProbe);
-  const installSmoothnessHooks=({delay,jitter,dropEvery,side,fallback,burstAt,burstFor,burstDelay,rafDiagnostics,networkTrace,impairmentSite})=>{
+  const installSmoothnessHooks=({delay,jitter,dropEvery,side,fallback,burstAt,burstFor,burstDelay,rafDiagnostics,networkTrace,impairmentSite,headedControl})=>{
    if(fallback)window.RTCPeerConnection=undefined;
    const lifecycle=window.gameLifecycle=[];
    const record=event=>lifecycle.push([performance.now(),event,document.visibilityState,document.hasFocus()]);
    record('init');for(const event of ['visibilitychange','freeze','resume'])document.addEventListener(event,()=>record(event));
-   for(const event of ['pageshow','pagehide'])window.addEventListener(event,()=>record(event));
+   for(const event of ['pageshow','pagehide',...(headedControl?['focus','blur']:[])])window.addEventListener(event,()=>record(event));
    const raf=window.requestAnimationFrame.bind(window);
    if(!rafDiagnostics){
     window.requestAnimationFrame=callback=>raf(timestamp=>{
@@ -231,10 +328,16 @@ try {
    };
    if(networkTrace)window.networkTransportProbe.expectSendWrapper(WebSocket.prototype.send);
   };
-  const hookOptions={delay,jitter,dropEvery,side,fallback,burstAt,burstFor,burstDelay,rafDiagnostics,networkTrace,impairmentSite};
+  const hookOptions={delay,jitter,dropEvery,side,fallback,burstAt,burstFor,burstDelay,rafDiagnostics,networkTrace,impairmentSite,headedControl};
   // A single init script makes the native WS observer the send captured by impairment.
-  if(networkTrace)await page.addInitScript({content:'('+installNetworkTransportProbe.toString()+')('+JSON.stringify({enabled:true,side})+');\n('+installSmoothnessHooks.toString()+')('+JSON.stringify(hookOptions)+');'});
-  else await page.addInitScript(installSmoothnessHooks,hookOptions);
+  if(networkTrace||startupTrace){
+   const scripts=[];
+   if(startupTrace)scripts.push('('+installStartupTransportProbe.toString()+')('+JSON.stringify({enabled:true,side,relayPort:port,rtcEnabled:!fallback})+');');
+   if(networkTrace)scripts.push('('+installNetworkTransportProbe.toString()+')('+JSON.stringify({enabled:true,side})+');');
+   scripts.push('('+installSmoothnessHooks.toString()+')('+JSON.stringify(hookOptions)+');');
+   if(startupTrace)scripts.push('window.startupTransportProbe.expectSendWrapper(WebSocket.prototype.send);');
+   await page.addInitScript({content:scripts.join('\n')});
+  }else await page.addInitScript(installSmoothnessHooks,hookOptions);
   await page.goto(host.url);
   if(liveCost)await page.evaluate(()=>{window.onProbeModuleReady=module=>window.liveCallbackCostProbe.attach(module);});
   await page.evaluate(()=>openProbe(0,1,2,3,true));
@@ -242,6 +345,7 @@ try {
   const cdp=await page.context().newCDPSession(page);sessions.push(cdp);
   if(side===1&&slow>1)await cdp.send('Emulation.setCPUThrottlingRate',{rate:slow});
   if(liveCost)await page.evaluate(()=>window.liveCallbackCostProbe.mark('cpu-throttle-configured'));
+  if(headedControl)await recordHeadedWindow(page,cdp,side,'setup-complete');
   hostProbe?.mark(`browser-${side+1}-setup-complete`);
  }
  hostProbe?.mark('netplay-setup-start');
@@ -254,7 +358,7 @@ try {
   for(const ws of lobbies)ws.send(JSON.stringify({type:'set-ready',ready:true}));await wait(()=>lobbies[0].latest.room?.seats.slice(0,2).every(s=>s?.ready));
   lobbies[0].send(JSON.stringify({type:'start'}));await wait(()=>lobbies[0].latest.type==='start');
  },{port,members});
- for(let side=0;side<2;++side)await pages[side].evaluate(async ({side,port,limit,inputMode,member,responsiveness,rafDiagnostics,networkTrace,liveCost})=>{
+ for(let side=0;side<2;++side)await pages[side].evaluate(async ({side,port,limit,inputMode,member,responsiveness,rafDiagnostics,networkTrace,liveCost,startupTrace})=>{
   const {SharedNetplay}=await import('/app/shared-netplay.mjs');
   const options={netplayUrl:`ws://127.0.0.1:${port}/?room=th09mp-0998&run=1&players=2&player=${side}&member=${member}`,netplayPlayer:side,netplayPlayerCount:2,netplaySeed:12345,netplayDifficulty:3,netplayLoadouts:[{character:0},{character:1}],netplayIceServers:[],netplaySpectatorCount:0};
   const m=window.measure={samples:[],frameDetails:[],networkPacing:[],loads:[],notices:[],closed:[],inputTape:[],started:0,ended:0,limit,audioStart:0,finished:false};
@@ -292,7 +396,7 @@ try {
   core.onGameFrame=(ok,ms)=>{
    window.audioOutputProbe?.observe(core.SDL3,play.active&&!m.ended);
    play.frame();if(!play.active||m.ended)return;const now=performance.now();
-   if(!m.started){m.started=now;m.audioStart=core.SDL3?.audioContext?.currentTime||0;if(responsiveness)window.responsivenessProbe.start(core,side);}
+   if(!m.started){m.started=now;m.audioStart=core.SDL3?.audioContext?.currentTime||0;if(responsiveness)window.responsivenessProbe.start(core,side);if(startupTrace)window.startupTransportProbe.mark('first-active');}
    updateInput(now);const s=readStats(),at=core._th09_game_metrics()/4,n=core.HEAPU32[at+9],phase=sessionStatus()[0];
    if(responsiveness)window.responsivenessProbe.onFrame(s,n,phase,now);
    if(s[0]>=180&&!m.sdlStart){const p=core._sdl_stats()/4;m.sdlStart=Array.from(core.HEAPU32.subarray(p,p+17));}
@@ -316,8 +420,11 @@ try {
   };
   if(networkTrace)window.networkTransportProbe.attachCore(core);
   if(rafDiagnostics)window.rafDiagnosticProbe.attach(core,play,m);
-  core._th09_probe_frame_limit?.(limit);core._th09_loop_start();core._th09_loop_pause(1);await play.connect(options);
- },{side,port,limit,inputMode,member:members[side],responsiveness,rafDiagnostics,networkTrace,liveCost});
+  core._th09_probe_frame_limit?.(limit);core._th09_loop_start();core._th09_loop_pause(1);
+  if(startupTrace)window.startupTransportProbe.mark('before-connect');
+  await play.connect(options);
+  if(startupTrace)window.startupTransportProbe.mark('after-connect');
+ },{side,port,limit,inputMode,member:members[side],responsiveness,rafDiagnostics,networkTrace,liveCost,startupTrace});
  if(profile)for(const cdp of sessions){await cdp.send('Profiler.enable');await cdp.send('Profiler.setSamplingInterval',{interval:500});await cdp.send('Profiler.start');}
  hostProbe?.mark('formal-poll-start');
  const began=Date.now(),timeout=limit/60*1000*3+20000;
@@ -362,18 +469,24 @@ try {
    selectedPath:window.__eaglerNetplayTransport==='rtc'?(selectedPaths.length&&selectedPaths.every(p=>p===selectedPaths[0])?selectedPaths[0]:'mixed'):window.__eaglerNetplayTransport,
    peers:rtcPeers,scope:'Selected ICE candidate types and channel state after measurement; no IP/SDP recorded. RTC is not automatically direct.'};
   window.networkTransportProbe?.stop('complete');
-  return {stats:readStats(),hash:core._th09_network_hash()>>>0,audited,route:window.__eaglerNetplayTransport,routeEvidence,renderer,audio,measure,impairment,memoryBytes:core.HEAPU8.length,
+  const startupTransport=window.startupTransportProbe?.snapshot({stop:true});
+  return {stats:readStats(),hash:core._th09_network_hash()>>>0,audited,route:window.__eaglerNetplayTransport,routeEvidence,renderer,audio,measure,impairment,memoryBytes:core.HEAPU8.length,startupTransport,
    audioOutput:window.audioOutputProbe?.snapshot(),responsiveness:window.responsivenessProbe?.snapshot(),rafDiagnostics:window.rafDiagnosticProbe?.snapshot(),networkTransport:window.networkTransportProbe?.snapshot(),liveCallbackCosts:window.liveCallbackCostProbe?.snapshot(),lifecycle:window.gameLifecycle,sdl,confirmedHashes:window.confirmedHashTrace||[]};
  },release)));
  retainedResults=results;hostProbe?.mark('browser-sample-capture-complete');
+ if(headedControl)await Promise.all(pages.map((page,side)=>recordHeadedWindow(page,sessions[side],side,'measurement-complete')));
  if(diagnosticRelay)relayTraceSnapshot=await diagnosticRelay.snapshot({stop:true});
  if(relayDiagnostics){
   assert.ok(relayTraceSnapshot?.valid,JSON.stringify({errors:relayTraceSnapshot?.errors,overflow:relayTraceSnapshot?.overflow}));
-  assert.ok(relayTraceSnapshot.coverage.exercised,'Relay input trace not exercised');
+  if(relayInputDiagnostics)assert.ok(relayTraceSnapshot.coverage.exercised,'Relay input trace not exercised');
+  assert.ok(relayTraceSnapshot.coverage.connectionHookExercised,'Relay connection hook not exercised');
   assert.equal(relayTraceSnapshot.sourceIdentity.relaySha256,identity.relay);
   assert.equal(relayTraceSnapshot.sourceIdentity.probeSha256,identity.relayTransportProbe);
   assert.equal(relayTraceSnapshot.sourceIdentity.fixtureSha256,identity.relayTransportFixture);
+  assert.equal(relayTraceSnapshot.sourceIdentity.startupProbeSha256,identity.relayStartupProbe);
+  if(startupTrace)assert.ok(relayTraceSnapshot.startup?.valid&&relayTraceSnapshot.startup.coverage.exercised,'Relay startup trace invalid or unexercised');
  }
+ if(startupTrace)for(const r of results){assert.ok(r.startupTransport?.valid,JSON.stringify({errors:r.startupTransport?.errors,overflow:r.startupTransport?.overflow,identity:r.startupTransport?.identity}));assert.ok(r.startupTransport.coverage.signalingExercised,'Browser startup signaling not exercised');}
  assert.equal(errors.length,0);assert.ok(results.every(r=>r.route===(fallback?'relay':'rtc')));
  if(!fallback)for(const r of results){
   assert.ok(r.routeEvidence.peers.length===1&&r.routeEvidence.peers.every(p=>p.selected?.state==='succeeded'&&p.selected.localType&&p.selected.remoteType&&!p.error),'RTC selected candidate evidence unavailable');
@@ -420,12 +533,15 @@ try {
  assert.equal(sha(resolve(root,'tests/browser/presentation.html')),identity.presentationHarness,'Presentation fixture changed during run');
  hostProbe?.mark('success-report-ready');const hostLoadSnapshot=await hostProbe?.stop();
  const report={passed:true,scope:'Two separate desktop Chromium processes; native GPU; real '+(fallback?'WebSocket relay':'RTC')+' with '+(impairmentSite==='client'?'seeded application-send impairment on input and repair lanes':impairmentSite==='relay'?'synchronous client send and seeded relay-process input impairment; burst anchored to relay first input receive':'synchronous client send; no injected send timers')+'; '+(inputMode==='tape'?'wire-verified frame-indexed hosted-key tape':'wall-clock synthetic keyboard')+(audioOutput?'; sampled SDL output blocks, not speaker/acoustic acceptance':'; audio clock only, not acoustic acceptance'),presentationMeasurement:'RAF timestamps of callbacks with a new renderer submission; NOT physical scanout. Completion gaps are reported separately because varying callback work is not itself a missed vsync.',identity,parameters,browsers:browsers.map(b=>b.version()),sameFrame,finalComparable,confirmedChecks,summary,results,errors,relayLog,relayTransport:relayTraceSnapshot,hostLoad:hostLoadSnapshot};
+ if(headedControl){headedControlEvidence.identityVerified=headedControlEvidence.launches.length===2&&headedControlEvidence.launches.every(row=>row.verified);report.headedControl=headedControlEvidence;}
  writeFileSync(resolve(out,label+'-report.json'),JSON.stringify(report,null,2));console.log(JSON.stringify({identity,parameters,sameFrame,summary,hashes:results.map(r=>r.hash)}));
 }catch(error){
  hostProbe?.mark('failure-observed');const hostLoadSnapshot=await hostProbe?.stop();
  if(diagnosticRelay)try{relayTraceSnapshot=await diagnosticRelay.snapshot({stop:true});}catch(error){relayTraceError=String(error.stack||error);}
- const partial=await Promise.all(pages.map(async p=>{try{return await p.evaluate(()=>{window.responsivenessProbe?.stop();window.networkTransportProbe?.stop('failure');return {measure:window.measure,impairment:window.impairment,stats:window.readStats?.(),audioOutput:window.audioOutputProbe?.snapshot(),responsiveness:window.responsivenessProbe?.snapshot(),rafDiagnostics:window.rafDiagnosticProbe?.snapshot(),networkTransport:window.networkTransportProbe?.snapshot(),liveCallbackCosts:window.liveCallbackCostProbe?.snapshot(),lifecycle:window.gameLifecycle,confirmedHashes:window.confirmedHashTrace};});}catch{return null;}}));
- writeFileSync(resolve(out,label+'-failure.json'),JSON.stringify({error:error.stack,identity,parameters,partial,results:retainedResults,errors,relayLog,relayTransport:relayTraceSnapshot,relayTraceError,hostLoad:hostLoadSnapshot},null,2));throw error;
+ const partial=await Promise.all(pages.map(async p=>{try{return await p.evaluate(()=>{window.responsivenessProbe?.stop();window.networkTransportProbe?.stop('failure');return {startupTransport:window.startupTransportProbe?.snapshot({stop:true}),measure:window.measure,impairment:window.impairment,stats:window.readStats?.(),audioOutput:window.audioOutputProbe?.snapshot(),responsiveness:window.responsivenessProbe?.snapshot(),rafDiagnostics:window.rafDiagnosticProbe?.snapshot(),networkTransport:window.networkTransportProbe?.snapshot(),liveCallbackCosts:window.liveCallbackCostProbe?.snapshot(),lifecycle:window.gameLifecycle,confirmedHashes:window.confirmedHashTrace};});}catch{return null;}}));
+ if(headedControl)await Promise.all(pages.map((page,side)=>recordHeadedWindow(page,sessions[side],side,'failure-observed')));
+ if(headedControl)headedControlEvidence.identityVerified=headedControlEvidence.launches.length===2&&headedControlEvidence.launches.every(row=>row.verified);
+ writeFileSync(resolve(out,label+'-failure.json'),JSON.stringify({error:error.stack,identity,parameters,partial,results:retainedResults,errors,relayLog,relayTransport:relayTraceSnapshot,relayTraceError,hostLoad:hostLoadSnapshot,headedControl:headedControlEvidence},null,2));throw error;
 }finally{
  await hostProbe?.stop();
  if(diagnosticRelay)await diagnosticRelay.snapshot({stop:true}).catch(()=>{});

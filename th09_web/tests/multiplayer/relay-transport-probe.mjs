@@ -1,6 +1,7 @@
 // Test-only instrumentation and fault injection for an owned loopback relay.
 // No payload bytes, request URLs, SDP, addresses or membership credentials are retained.
 import {performance} from 'node:perf_hooks';
+import {createRelayStartupObserver} from './relay-startup-probe.mjs';
 
 export const RELAY_PACKET_COLUMNS=['id','sessionLo','sessionHi','sender','players','sequence','ackSequence','latestFrame','ackFrame','firstInputFrame','senderFrame','frameAdvantage','inputCount','reserved','payloadBytes','fnv1a32','destination'];
 export const RELAY_EVENT_COLUMNS=['id','phase','packetId','socketId','receiveEventId','scheduledId','enteredAt','exitedAt','plannedDelayMs','dueAt','burst','bufferedBefore','bufferedAfter','pendingMessages','pendingBytes','threw','reason'];
@@ -35,6 +36,8 @@ export function installRelayTransportProbe(WebSocket,configuration={},dependenci
  for(const [key,value] of Object.entries(limits))if(!Number.isInteger(value)||value<1)throw Error('Invalid limit '+key);
  const now=dependencies.now||(()=>performance.now()),epoch=dependencies.epoch||(()=>Date.now());
  const timeOrigin=dependencies.timeOrigin??performance.timeOrigin;
+ const startup=config.startupTrace?createRelayStartupObserver({rtcTimeoutMs:config.rtcTimeoutMs??4500},
+  {now,epoch,timeOrigin,startupLimit:dependencies.startupLimit}):null;
  const schedule=dependencies.schedule||setTimeout,cancel=dependencies.cancel||clearTimeout;
  const repeat=dependencies.repeat||setInterval,cancelRepeat=dependencies.cancelRepeat||clearInterval;
  const pair=()=>{const before=now(),epochMs=epoch(),after=now();return {timeOrigin,before,epochMs,after};};
@@ -90,6 +93,7 @@ export function installRelayTransportProbe(WebSocket,configuration={},dependenci
   const info={id:connections.length,kind,player:hasSeat&&Number.isInteger(seat)&&seat>=0&&seat<3?seat:null,openedAt:now(),closedAt:null};
   connections.push(info);
   const slot={id:info.id,socket,info,pending:new Set(),bytes:0};sockets.set(socket,slot);live.add(slot);
+  startup?.connection(info);
   socket.once('close',()=>closePending(slot));
  }
  function serverEmit(event,...args){
@@ -98,6 +102,8 @@ export function installRelayTransportProbe(WebSocket,configuration={},dependenci
  }
  function emit(event,...args){
   const slot=sockets.get(this);
+  if(startup&&slot&&(event==='close'||event==='error'||event==='message'&&!args[1]))
+   return startup.emit(slot.info,event,args,()=>Reflect.apply(originalEmit,this,[event,...args]));
   if(!slot||slot.info.kind!=='player'||event!=='message'||!args[1])return Reflect.apply(originalEmit,this,[event,...args]);
   const p=parsed(args[0]);if(!p){if(running)++counts.otherBinaryReceive;return Reflect.apply(originalEmit,this,[event,...args]);}
   if(!anchor&&p.fields[11]>0)anchor={at:now(),sender:p.fields[2],sessionLo:p.fields[0],sessionHi:p.fields[1],sequence:p.fields[4],firstInputFrame:p.fields[8]};
@@ -118,6 +124,7 @@ export function installRelayTransportProbe(WebSocket,configuration={},dependenci
  }
  function send(...args){
   const slot=sockets.get(this);
+  if(startup&&slot&&typeof args[0]==='string')return startup.send(slot.info,args,()=>Reflect.apply(originalSend,this,args));
   if(!slot||slot.info.kind!=='player')return Reflect.apply(originalSend,this,args);
   const p=parsed(args[0],slot.info.player??-1);
   if(!p){if(running&&typeof args[0]!=='string')++counts.otherBinarySend;return Reflect.apply(originalSend,this,args);}
@@ -165,17 +172,19 @@ export function installRelayTransportProbe(WebSocket,configuration={},dependenci
   if(frozen)return frozen;
   if(stop){stopped=pair();running=false;cancelRepeat(timingTimer);}
   const snapshotClock=pair(),hookIdentity={serverEmitCurrent:WebSocket.Server.prototype.emit===serverEmit,emitCurrent:WebSocket.prototype.emit===emit,sendCurrent:WebSocket.prototype.send===send};
+  const startupSnapshot=startup?.snapshot({stop});
   const value={version:1,scope:'Owned loopback shared relay; JS receive/forward/send API boundaries, not OS or peer delivery.',
    injection:{...config,packetScope:'E9NP version 4 kind 1; ACK-only and redundant input included; non-input control/hash/signaling untouched; relay has no separate RTC repair lane.',
     jitterAlgorithm:'Per-sender LCG 1664525*x+1013904223, seed 0x915ab+sender; same formula as legacy client impairment. Relay forwarding order can differ.',
     burstClock:'First non-empty E9NP input receive in this relay process; distinct from browser active time.',anchor:anchor?{...anchor}:null},
    clock:{unit:'milliseconds',started,stopped,snapshot:snapshotClock},
    limits:{...limits},columns:{packet:RELAY_PACKET_COLUMNS,event:RELAY_EVENT_COLUMNS,phases:PHASES,reasons:REASONS,timing:['at','dueAt','lateMs','gapMs']},
-   valid:errors.length===0&&Object.entries(overflow).every(([key,v])=>key==='firstAt'||v===0)&&Object.values(hookIdentity).every(Boolean),
+   valid:errors.length===0&&Object.entries(overflow).every(([key,v])=>key==='firstAt'||v===0)&&Object.values(hookIdentity).every(Boolean)&&startupSnapshot?.valid!==false,
    coverage:{exercised:counts.receive>0&&counts.sent>0,connectionHookExercised:connections.length>0,exactNativeAcceptance:false,osArrivalIncluded:false,relayTraceIncluded:true},
    identity:hookIdentity,counts:{...counts},overflow:{...overflow},errors:errors.map(x=>({...x})),connections:connections.map(x=>({...x})),
    packets:packets.map(x=>x.slice()),events:events.map(x=>x.slice()),timing:timing.map(x=>x.slice()),
-   pending:[...jobs.values()].map(j=>({scheduledId:j.id,packetFields:j.parsed.fields.slice(),dueAt:j.due,plannedDelayMs:j.delay,burst:j.burst}))};
+   pending:[...jobs.values()].map(j=>({scheduledId:j.id,packetFields:j.parsed.fields.slice(),dueAt:j.due,plannedDelayMs:j.delay,burst:j.burst})),
+   ...(startupSnapshot?{startup:startupSnapshot}:{})};
   if(stop)frozen=value;
   return value;
  }
