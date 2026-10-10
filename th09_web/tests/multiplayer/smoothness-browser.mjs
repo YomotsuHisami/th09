@@ -1,8 +1,8 @@
-// Two separate Chromium processes, real RTC, wall-clock keyboard input.
+// Two separate Chromium processes, verified RTC or explicit relay transport.
 // No artificial outage by default: isolate sustained correction from outages.
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
-import {createHash} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
 import {mkdirSync,readFileSync,writeFileSync} from 'node:fs';
 import net from 'node:net';
 import {resolve} from 'node:path';
@@ -14,10 +14,11 @@ import {installAudioOutputProbe} from './audio-output-probe.mjs';
 const root=fileURLToPath(new URL('../../',import.meta.url));
 const label=process.env.RUN_LABEL||'smoothness';
 assert.match(label,/^[\w-]+$/);
+const members=[randomUUID(),randomUUID()];
 const integer=(key,fallback,min,max)=>{const n=Number(process.env[key]??fallback);assert.ok(Number.isInteger(n)&&n>=min&&n<=max,key);return n;};
 const limit=integer('FRAMES',1800,300,18000),delay=integer('DELAY_MS',39,0,200),jitter=integer('JITTER_MS',5,0,100);
 const slow=integer('CPU_RATE',1,1,8),dropEvery=integer('DROP_EVERY',0,0,1000);
-const release=process.argv.includes('--release'),profile=process.env.PROFILE_CPU==='1';
+const release=process.argv.includes('--release'),profile=process.env.PROFILE_CPU==='1',fallback=process.argv.includes('--relay');
 const inputMode=process.env.INPUT_MODE||'wall-clock';assert.ok(['wall-clock','tape'].includes(inputMode));
 const audioOutput=process.env.AUDIO_OUTPUT==='1';
 const artifactDirectory=resolve(process.env.PC_BUILD||resolve(root,release?'artifacts/sdl-release':'artifacts/sdl3'));
@@ -30,8 +31,8 @@ identity.relay=sha(relayPath);identity.shell=sha(resolve(root,'sdl-runtime/share
 if(audioOutput)identity.audioProbe=sha(fileURLToPath(new URL('./audio-output-probe.mjs',import.meta.url)));
 const port=await new Promise(r=>{const s=net.createServer();s.listen(0,'127.0.0.1',()=>{const p=s.address().port;s.close(()=>r(p));});});
 const relay=spawn(process.execPath,[relayPath],{windowsHide:true,env:{...process.env,EAGLER_NETPLAY_RELAY_HOST:'127.0.0.1',EAGLER_NETPLAY_RELAY_PORT:String(port),EAGLER_NETPLAY_STUN_URLS:''},stdio:['ignore','pipe','pipe']});
-let relayLog='',host;const browsers=[],pages=[],sessions=[],errors=[];
-const parameters={limit,delay,jitter,slow,dropEvery,release,profile,inputMode,audioOutput};
+let relayLog='',host,retainedResults;const browsers=[],pages=[],sessions=[],errors=[];
+const parameters={limit,delay,jitter,slow,dropEvery,release,profile,fallback,inputMode,audioOutput};
 const distribution=values=>{const a=values.slice().sort((a,b)=>a-b);return {count:a.length,total:a.reduce((s,n)=>s+n,0),p50:a[Math.floor(a.length*.5)]??null,p95:a[Math.floor(a.length*.95)]??null,p99:a[Math.floor(a.length*.99)]??null,max:a.at(-1)??null,over25ms:a.filter(n=>n>25).length,over50ms:a.filter(n=>n>50).length};};
 try {
  await new Promise((accept,reject)=>{const timer=setTimeout(()=>reject(Error('relay startup timeout')),10000);relay.stdout.on('data',b=>{relayLog=(relayLog+b).slice(-32768);if(relayLog.includes('netplay relay listening')){clearTimeout(timer);accept();}});relay.stderr.on('data',b=>relayLog=(relayLog+b).slice(-32768));relay.on('error',reject);relay.on('exit',code=>reject(Error('relay exit '+code)));});
@@ -40,7 +41,8 @@ try {
   const browser=await launchBrowser({args:['--enable-gpu','--use-gl=angle','--use-angle=d3d11','--autoplay-policy=no-user-gesture-required']});browsers.push(browser);
   const page=await browser.newPage();pages.push(page);page.on('pageerror',e=>errors.push({side,error:e.stack}));
   if(audioOutput)await page.addInitScript(installAudioOutputProbe);
-  await page.addInitScript(({delay,jitter,dropEvery,side})=>{
+  await page.addInitScript(({delay,jitter,dropEvery,side,fallback})=>{
+   if(fallback)window.RTCPeerConnection=undefined;
    const raf=window.requestAnimationFrame.bind(window);
    window.requestAnimationFrame=callback=>raf(timestamp=>{
     const previous=window.currentGameRafTimestamp;window.currentGameRafTimestamp=timestamp;
@@ -48,10 +50,11 @@ try {
    });
    const stats=window.impairment={matched:0,sent:0,dropped:0,pending:0,peakPending:0,planned:[],delivered:[],lanes:{}};
    let seed=0x915ab+side;
-   const send=RTCDataChannel.prototype.send;
-   RTCDataChannel.prototype.send=function(bytes){
+   const prototype=fallback?WebSocket.prototype:RTCDataChannel.prototype,send=prototype.send;
+   prototype.send=function(bytes){
     if(typeof bytes==='string')return send.call(this,bytes);
-    const data=ArrayBuffer.isView(bytes)?new Uint8Array(bytes.buffer,bytes.byteOffset,bytes.byteLength):new Uint8Array(bytes);
+    const packet=ArrayBuffer.isView(bytes)?new Uint8Array(bytes.buffer,bytes.byteOffset,bytes.byteLength):new Uint8Array(bytes);
+    const data=packet[0]===0xe7?packet.subarray(2):packet;
     // Already-confirmed production checks, also available without dev exports.
     if(data.length===20&&data[0]===84&&data[1]===57&&data[2]===72&&data[3]===67){
      const view=new DataView(data.buffer,data.byteOffset,data.byteLength);
@@ -59,31 +62,31 @@ try {
     }
     if(data[0]!==69||data[5]!==1)return send.call(this,bytes);
     window.observeLocalInput?.(data);
-    const n=++stats.matched;stats.lanes[this.label]=(stats.lanes[this.label]||0)+1;
-    if(this.label.includes('input')&&dropEvery&&n%dropEvery===0){++stats.dropped;return;}
+    const lane=fallback?'relay':this.label,n=++stats.matched;stats.lanes[lane]=(stats.lanes[lane]||0)+1;
+    if(lane.includes('input')&&dropEvery&&n%dropEvery===0){++stats.dropped;return;}
     seed=(Math.imul(seed,1664525)+1013904223)>>>0;
-    const planned=Math.max(0,delay+(seed/0x100000000*2-1)*jitter),began=performance.now(),copy=data.slice();
+    const planned=Math.max(0,delay+(seed/0x100000000*2-1)*jitter),began=performance.now(),copy=packet.slice();
     stats.planned.push(planned);++stats.pending;stats.peakPending=Math.max(stats.peakPending,stats.pending);
     if(stats.pending>1024||stats.planned.length>200000)throw Error('impairment sample/queue overflow');
-    setTimeout(()=>{--stats.pending;if(this.readyState==='open'){send.call(this,copy);++stats.sent;stats.delivered.push(performance.now()-began);}},planned);
+    setTimeout(()=>{--stats.pending;if(this.readyState==='open'||this.readyState===WebSocket.OPEN){send.call(this,copy);++stats.sent;stats.delivered.push(performance.now()-began);}},planned);
    };
-  },{delay,jitter,dropEvery,side});
+  },{delay,jitter,dropEvery,side,fallback});
   await page.goto(host.url);await page.evaluate(()=>openProbe(0,1,2,3,true));
   const cdp=await page.context().newCDPSession(page);sessions.push(cdp);
   if(side===1&&slow>1)await cdp.send('Emulation.setCPUThrottlingRate',{rate:slow});
  }
- await pages[0].evaluate(async port=>{
-  const wait=async test=>{const start=performance.now();while(!test()){if(performance.now()-start>10000)throw Error('lobby timeout');await new Promise(r=>setTimeout(r,10));}};
+ await pages[0].evaluate(async ({port,members})=>{
+  const wait=async test=>{const start=performance.now();while(!test()){const closed=window.lobbies?.find(ws=>ws.readyState===WebSocket.CLOSED);if(closed)throw Error('lobby closed '+JSON.stringify(closed.failure));if(performance.now()-start>10000)throw Error('lobby timeout');await new Promise(r=>setTimeout(r,10));}};
   window.lobbies=[];
-  for(const id of ['smoothnessleft','smoothnessright']){const ws=new WebSocket(`ws://127.0.0.1:${port}/?room=th09mp-0998&lobby=${id}`);ws.onmessage=e=>{const m=JSON.parse(e.data);if(m.type==='error')throw Error(m.error);ws.latest=m;};lobbies.push(ws);await wait(()=>ws.readyState===WebSocket.OPEN&&ws.latest);}
+  for(const [side,id] of ['smoothnessleft','smoothnessright'].entries()){const ws=new WebSocket(`ws://127.0.0.1:${port}/?room=th09mp-0998&lobby=${id}&member=${members[side]}&intent=${side?'join':'create'}&players=2&difficulty=3`);ws.onclose=e=>{ws.failure={code:e.code,reason:e.reason};};ws.onmessage=e=>{const m=JSON.parse(e.data);if(m.type==='error')throw Error(m.error);ws.latest=m;};lobbies.push(ws);await wait(()=>ws.readyState===WebSocket.OPEN&&ws.latest);}
   lobbies[0].send(JSON.stringify({type:'take-seat',seat:0,loadout:0}));await wait(()=>lobbies[0].latest.room?.seats[0]);
   lobbies[1].send(JSON.stringify({type:'take-seat',seat:1,loadout:1}));await wait(()=>lobbies[0].latest.room?.seats[1]);
   for(const ws of lobbies)ws.send(JSON.stringify({type:'set-ready',ready:true}));await wait(()=>lobbies[0].latest.room?.seats.slice(0,2).every(s=>s?.ready));
   lobbies[0].send(JSON.stringify({type:'start'}));await wait(()=>lobbies[0].latest.type==='start');
- },port);
- for(let side=0;side<2;++side)await pages[side].evaluate(async ({side,port,limit,inputMode})=>{
+ },{port,members});
+ for(let side=0;side<2;++side)await pages[side].evaluate(async ({side,port,limit,inputMode,member})=>{
   const {SharedNetplay}=await import('/app/shared-netplay.mjs');
-  const options={netplayUrl:`ws://127.0.0.1:${port}/?room=th09mp-0998&run=1&players=2&player=${side}`,netplayPlayer:side,netplayPlayerCount:2,netplaySeed:12345,netplayDifficulty:3,netplayLoadouts:[{character:0},{character:1}],netplayIceServers:[],netplaySpectatorCount:0};
+  const options={netplayUrl:`ws://127.0.0.1:${port}/?room=th09mp-0998&run=1&players=2&player=${side}&member=${member}`,netplayPlayer:side,netplayPlayerCount:2,netplaySeed:12345,netplayDifficulty:3,netplayLoadouts:[{character:0},{character:1}],netplayIceServers:[],netplaySpectatorCount:0};
   const m=window.measure={samples:[],loads:[],notices:[],closed:[],inputTape:[],started:0,ended:0,limit,audioStart:0,finished:false};
   core.eaglerOptions=options;window.play=new SharedNetplay(core,{onStatus:s=>m.notices.push(s),onClose:s=>m.closed.push(s),onResult:()=>{m.finished=true;}});
   window.readStats=()=>Array.from(core.HEAPU32.subarray(core._th09_rollback_info()/4,core._th09_rollback_info()/4+8));
@@ -120,6 +123,7 @@ try {
    play.frame();if(!play.active||m.ended)return;const now=performance.now();
    if(!m.started){m.started=now;m.audioStart=core.SDL3?.audioContext?.currentTime||0;}
    updateInput(now);const s=readStats(),at=core._th09_game_metrics()/4,n=core.HEAPU32[at+9],phase=sessionStatus()[0];
+   if(s[0]>=180&&!m.sdlStart){const p=core._sdl_stats()/4;m.sdlStart=Array.from(core.HEAPU32.subarray(p,p+17));}
    if(!Number.isFinite(window.currentGameRafTimestamp))throw Error('Game callback outside measured requestAnimationFrame');
    m.samples.push([now-m.started,ok,ms,...s,n,phase,window.currentGameRafTimestamp]);
    if(core._th09_probe_load&&m.samples.length%30===0){const at=core._th09_probe_load()/4;m.loads.push([s[0],...core.HEAPU32.subarray(at,at+20)]);}
@@ -127,7 +131,7 @@ try {
    if(s[0]>=limit&&s[1]>=limit)m.ended=now;
   };
   core._th09_probe_frame_limit?.(limit);core._th09_loop_start();core._th09_loop_pause(1);await play.connect(options);
- },{side,port,limit,inputMode});
+ },{side,port,limit,inputMode,member:members[side]});
  if(profile)for(const cdp of sessions){await cdp.send('Profiler.enable');await cdp.send('Profiler.setSamplingInterval',{interval:500});await cdp.send('Profiler.start');}
  const began=Date.now(),timeout=limit/60*1000*3+20000;
  let status;
@@ -145,11 +149,13 @@ try {
   const renderer=ext?gl.getParameter(ext.UNMASKED_RENDERER_WEBGL):gl.getParameter(gl.RENDERER);
   const audio={state:core.SDL3?.audioContext?.state,advancedSeconds:(core.SDL3?.audioContext?.currentTime||0)-measure.audioStart};
   const audited=release?null:Array.from(core.HEAP32.subarray(core._th09_probe_world()/4,core._th09_probe_world()/4+48));
+  const sdlAt=core._sdl_stats()/4,sdl=Array.from(core.HEAPU32.subarray(sdlAt,sdlAt+17));
   return {stats:readStats(),hash:core._th09_network_hash()>>>0,audited,route:window.__eaglerNetplayTransport,renderer,audio,measure,impairment,memoryBytes:core.HEAPU8.length,
-   audioOutput:window.audioOutputProbe?.snapshot(),confirmedHashes:window.confirmedHashTrace||[]};
+   audioOutput:window.audioOutputProbe?.snapshot(),sdl,confirmedHashes:window.confirmedHashTrace||[]};
  },release)));
- assert.equal(errors.length,0);assert.ok(results.every(r=>r.route==='rtc'));
- for(const r of results){assert.doesNotMatch(r.renderer,/swiftshader|llvmpipe|microsoft basic render/i);assert.ok(r.impairment.matched>100&&r.impairment.sent>100,'RTC input impairment not exercised');assert.ok(r.audio.advancedSeconds>1);}
+ retainedResults=results;
+ assert.equal(errors.length,0);assert.ok(results.every(r=>r.route===(fallback?'relay':'rtc')));
+ for(const r of results){assert.doesNotMatch(r.renderer,/swiftshader|llvmpipe|microsoft basic render/i);assert.ok(r.impairment.matched>100&&r.impairment.sent>100,'Input impairment not exercised on requested route');assert.ok(r.audio.advancedSeconds>1);}
  const sameFrame=results[0].stats[0]===results[1].stats[0];
  // Equal speculative frame numbers do not make two predictions comparable.
  // The release ABI deliberately has no frame-limit hook: accept its complete
@@ -170,14 +176,16 @@ try {
   for(let i=1;i<samples.length;++i)if(samples[i][13]!==samples[i-1][13])rafGaps.push(samples[i][13]-samples[i-1][13]);
   for(const s of samples)if(!prior||s[11]!==prior[11]){if(prior){gaps.push(s[13]-prior[13]);completionGaps.push(s[0]-prior[0]);}prior=s;}
   const first=samples[0],last=samples.at(-1),elapsed=last[0]-first[0];
+  const fields=['calls','batches','uploadBytes','readBytes','frames','presentations','bufferReplacements','bufferSubUpdates','vertexUploadBytes','directBytes','copiedBytes','layoutSetups','textureBinds','framebufferBinds','programCompiles','genericBatches','resamples'];
+  r.sdlMeasured=Object.fromEntries(fields.map((name,i)=>[name,r.sdl[i]-r.measure.sdlStart[i]]));
   return {logicHz:(last[3]-first[3])*1000/elapsed,elapsedMs:elapsed,firstFrame:first[3],lastFrame:last[3],callbacks:samples.length,waitCallbacks:samples.filter(s=>s[1]===2).length,corrections:last[5]-first[5],resimulated:last[6]-first[6],captures:last[7]-first[7],callbackWorkMs:distribution(samples.map(s=>s[2])),presentationGapMs:distribution(gaps),callbackCompletionGapMs:distribution(completionGaps),rafGapMs:distribution(rafGaps),plannedDelayMs:distribution(r.impairment.planned),deliveredDelayMs:distribution(r.impairment.delivered),scenes:[...new Set(samples.map(s=>s[12]))]};
  });
  assert.equal(sha(wasmPath),identity.wasm,'WASM changed during run');assert.equal(sha(relayPath),identity.relay);
- const report={passed:true,scope:'Two separate desktop Chromium processes; native GPU; real RTC with seeded application-send impairment on input and repair lanes; '+(inputMode==='tape'?'wire-verified frame-indexed hosted-key tape':'wall-clock synthetic keyboard')+(audioOutput?'; sampled SDL output blocks, not speaker/acoustic acceptance':'; audio clock only, not acoustic acceptance'),presentationMeasurement:'RAF timestamps of callbacks with a new renderer submission; NOT physical scanout. Completion gaps are reported separately because varying callback work is not itself a missed vsync.',identity,parameters,browsers:browsers.map(b=>b.version()),sameFrame,finalComparable,confirmedChecks,summary,results,errors,relayLog};
+ const report={passed:true,scope:'Two separate desktop Chromium processes; native GPU; real '+(fallback?'WebSocket relay':'RTC')+' with seeded application-send impairment on input and repair lanes; '+(inputMode==='tape'?'wire-verified frame-indexed hosted-key tape':'wall-clock synthetic keyboard')+(audioOutput?'; sampled SDL output blocks, not speaker/acoustic acceptance':'; audio clock only, not acoustic acceptance'),presentationMeasurement:'RAF timestamps of callbacks with a new renderer submission; NOT physical scanout. Completion gaps are reported separately because varying callback work is not itself a missed vsync.',identity,parameters,browsers:browsers.map(b=>b.version()),sameFrame,finalComparable,confirmedChecks,summary,results,errors,relayLog};
  writeFileSync(resolve(out,label+'-report.json'),JSON.stringify(report,null,2));console.log(JSON.stringify({identity,parameters,sameFrame,summary,hashes:results.map(r=>r.hash)}));
 }catch(error){
  const partial=await Promise.all(pages.map(async p=>{try{return await p.evaluate(()=>({measure:window.measure,impairment:window.impairment,stats:window.readStats?.(),audioOutput:window.audioOutputProbe?.snapshot(),confirmedHashes:window.confirmedHashTrace}));}catch{return null;}}));
- writeFileSync(resolve(out,label+'-failure.json'),JSON.stringify({error:error.stack,identity,parameters,partial,errors,relayLog},null,2));throw error;
+ writeFileSync(resolve(out,label+'-failure.json'),JSON.stringify({error:error.stack,identity,parameters,partial,results:retainedResults,errors,relayLog},null,2));throw error;
 }finally{
  for(const browser of browsers)await browser.close();if(host){host.netplay.close();await new Promise(r=>host.server.close(r));}relay.kill();
 }

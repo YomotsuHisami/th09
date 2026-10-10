@@ -83,7 +83,12 @@ void WorldState::PlayerState(Player& x) {
 }
 void WorldState::BackgroundState(Background& x) {
     // primitives never reallocates between match construction and retirement.
-    for(auto& p:x.primitives)NamedFields("p",p);
+    // Every VM is captured, so keep the same complete bytes in one journal
+    // range instead of one registration/host copy per animation. The hash
+    // oracle retains its independent per-VM ordering and diagnostics.
+    static_assert(std::is_trivially_copyable_v<AnmVm>);
+    if(hashEnabled)for(auto& p:x.primitives)NamedFields("p",p);
+    else if(!x.primitives.empty())Touch(x.primitives.data(),x.primitives.size()*sizeof(x.primitives[0]));
     NamedFields("x.camera,x.goals,x.starts,x.end_tangents,x.start_tangents,x.fov_goal,x.fov_start,x.durations,x.interpolation_times,x.interpolation_modes,x.script_time,x.instruction,x.frame,x.position,x.clear_color,x.fog,x.fog_start,x.fog_goal,x.fog_duration,x.fog_time,x.requested_label,x.transition_state,x.transition_frames,x.overlays,x.boss_animations,x.boss_state,x.boss_frames,x.boss_count,x.boss_parameter,x.tint,x.next_position,x.next_position_time,x.previous_position,x.previous_position_time,x.jumped,x.sway,x.distance_squared,x.invalid",x.camera,x.goals,x.starts,x.end_tangents,x.start_tangents,x.fov_goal,x.fov_start,x.durations,x.interpolation_times,x.interpolation_modes,x.script_time,x.instruction,x.frame,x.position,x.clear_color,x.fog,x.fog_start,x.fog_goal,x.fog_duration,x.fog_time,x.requested_label,x.transition_state,x.transition_frames,x.overlays,x.boss_animations,x.boss_state,x.boss_frames,x.boss_count,x.boss_parameter,x.tint,x.next_position,x.next_position_time,x.previous_position,x.previous_position_time,x.jumped,x.sway,x.distance_squared,x.invalid);
 }
 void WorldState::Recording(ReplayArchive& x) {
@@ -138,7 +143,10 @@ bool WorldState::Save(GameSession& s) {
             }
             Bind(bullets.checkpoint);
         }
-        NamedFields("f.bullet_visuals->appearances",f.bullet_visuals->appearances);
+        // initialize() is the sole writer of these resource templates, before
+        // the match/checkpoint horizon. Live animation writes target instances.
+        // The independent dense/hash oracle still includes every template byte.
+        if(!sparse||hashEnabled)NamedFields("f.bullet_visuals->appearances",f.bullet_visuals->appearances);
         auto& visuals=*f.bullet_visuals;
         if(!sparse||hashEnabled)for(auto& v:visuals.instances)Fields(v);
         else {

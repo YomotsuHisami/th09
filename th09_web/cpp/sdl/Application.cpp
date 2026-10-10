@@ -556,7 +556,11 @@ TH09_EXPORT("th09_loop_start") void th09_loop_start(){
             ok=spectator_tick(1,ticks);
             if(ok==2)cadence.blocked(false);else cadence.complete();
         }else for(u32 n=0;n<ticks&&ok;++n){
-            ok=th09_game_tick(n+1==ticks);if(ok==2){cadence.blocked(rollback_active&&network.active);break;}
+            // A netplay tick can exhaust the callback budget by itself. Draw
+            // its current result before that exit instead of waiting for a
+            // later due tick that may never run. Historical resimulation is
+            // still filtered by rollback_tick's catch-up frontier.
+            ok=th09_game_tick(rollback_active||n+1==ticks);if(ok==2){cadence.blocked(rollback_active&&network.active);break;}
             cadence.complete();
             if(rollback_active&&emscripten_get_now()-begin>=10){
                 // Drop overdue work only when due ticks were left unfinished.

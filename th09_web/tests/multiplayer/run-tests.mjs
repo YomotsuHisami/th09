@@ -26,6 +26,8 @@ function compile(args){
   if(result.status!==0)throw Error(result.stdout+result.stderr);
 }
 const suites={
+  'graphics-projection':[resolve(root,'cpp/game/GraphicsMath.cpp')],
+  'audio-pitch':[],
   'frame-schedule':[],
   'spectator-schedule':[],
   session:[resolve(root,'cpp/multiplayer/RollbackSession.cpp'),

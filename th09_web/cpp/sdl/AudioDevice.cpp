@@ -23,7 +23,10 @@ struct AudioDevice::Impl {
     std::array<std::unique_ptr<Voice>,54> sounds;std::array<std::vector<u8>,39> samples;std::unique_ptr<Voice> music;
     std::vector<u8> formats;i32 track=-1,fade=0,fade_total=0;mutable u32 stats[8]{};
     ~Impl(){music.reset();for(auto& sound:sounds)sound.reset();if(stream)SDL_DestroyAudioStream(stream);if(engine_ready)ma_engine_uninit(&engine);}
-    bool attach(Voice& v){if(ma_sound_init_from_data_source(&engine,&v.decoder,MA_SOUND_FLAG_NO_SPATIALIZATION,nullptr,&v.sound)!=MA_SUCCESS)return false;v.attached=true;return true;}
+    // TH09 never changes voice pitch or uses Doppler. Avoid the dynamic pitch
+    // filter at unity rate; miniaudio still enables necessary resampling when
+    // a decoder's sample rate differs from the engine's 44100 Hz.
+    bool attach(Voice& v){if(ma_sound_init_from_data_source(&engine,&v.decoder,MA_SOUND_FLAG_NO_SPATIALIZATION|MA_SOUND_FLAG_NO_PITCH,nullptr,&v.sound)!=MA_SUCCESS)return false;v.attached=true;return true;}
     Voice* voice(u32 n){return n&&n<=sounds.size()?sounds[n-1].get():nullptr;}
 };
 AudioDevice::AudioDevice():impl(std::make_unique<Impl>()){}

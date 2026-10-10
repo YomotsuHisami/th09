@@ -83,7 +83,7 @@ try {
     const adonis=peers.map(w=>{const at=w.core._th09_adonis_info()/4;return Array.from(w.core.HEAPU32.subarray(at,at+6));});
     if(adonis.some(v=>v[0]!==adonisMode||v[1]!==inputDelay||(adonisMode===1&&v[2]!==0)))throw Error('wrong timing/snapshot mode '+JSON.stringify(adonis));
     if(pauseTrace&&!pauseCalls.every(n=>n>20))throw Error('Pause path was not exercised');
-    if(inputTrace==='endurance-tape'&&limit>=4400&&!phases.every(p=>p.has(3)))throw Error('Results path was not exercised');
+    if(inputTrace==='endurance-tape'&&limit>=4400&&!phases.every(p=>p.has(3)))throw Error('Results path was not exercised '+JSON.stringify({frames:limit,phases:phases.map(p=>[...p]),pauseCalls,status:peers.map(w=>w.probeStatus())}));
     const costs=samples.map(rows=>{const steady=rows.filter(r=>r[0]>=180&&r[0]<limit),sorted=steady.map(r=>r[4]).sort((a,b)=>a-b);
       return {calls:steady.length,p50:sorted[Math.floor(sorted.length*.5)],p95:sorted[Math.floor(sorted.length*.95)],p99:sorted[Math.floor(sorted.length*.99)],max:sorted.at(-1),
         correctionCalls:steady.filter(r=>r[2]>0).length,completeDeepCalls:steady.filter(r=>r[2]===1&&r[3]>=fixedDelay&&r[5]===1).length,maxResimulatedInCall:Math.max(...steady.map(r=>r[3]))};});
