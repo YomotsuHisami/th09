@@ -1,5 +1,16 @@
 # TH09 rollback handoff for a new agent
 
+> **2026-10-10 experiment/rollback-4x override:** Current work is isolated in
+> `D:/workspace/eagler/worktrees/th09-rollback-4x`, based on authored `6ce1c46`.
+> Read [rollback-4x-performance.md](rollback-4x-performance.md) and
+> [rollback-4x-evidence.json](rollback-4x-evidence.json) first. The selected J
+> source and frozen release improve presentation continuity, but **4x stable
+> 60 Hz is not achieved** (about 31 Hz in release A/B/B/A). Shared common stays
+> at `43add4dc9085c65468f7ab15428c00206cbe3834`, read explicitly from the canonical
+> title's submodule. Use the named frozen artifacts, never stale default builds.
+> The user restricts environment work to **nig**. No public push or deployment
+> was performed. Older paths, pins and measurements below are historical.
+
 > **2026-10-02 experiment/adonis override:** This worktree is now
 > `D:/workspace/eagler/worktrees/adonis/th09`, branched from MP `5b9305c`.
 > Read [ADONIS-EXPERIMENT.md](ADONIS-EXPERIMENT.md) first for the new timing
