@@ -17,7 +17,7 @@ const identity={wasm:dirs.map(d=>sha(resolve(d,'th09.wasm'))),harness:sha(fileUR
 for(const dir of dirs){const module=new WebAssembly.Module(readFileSync(resolve(dir,'th09.wasm')));assert.ok(!WebAssembly.Module.exports(module).some(e=>e.name.startsWith('th09_probe_')||e.name==='th09_title_open'));}
 const browser=await launchBrowser({args:['--enable-gpu','--use-gl=angle','--use-angle=d3d11','--autoplay-policy=no-user-gesture-required']});
 const hosts=[],pages=[],errors=[],checks=[];
-const points=[...new Set([...Array.from({length:Math.floor(frames/120)},(_,i)=>(i+1)*120),401,430,479,481,901,950,979,981,frames])].sort((a,b)=>a-b);
+const points=[...new Set([...Array.from({length:Math.floor(frames/120)},(_,i)=>(i+1)*120),203,204,401,430,479,481,847,848,901,918,950,979,981,frames])].sort((a,b)=>a-b);
 try{
  for(let side=0;side<2;++side){
   const host=await presentationServer(0,{release:true,artifactDirectory:dirs[side]});hosts.push(host);

@@ -26,6 +26,7 @@ function compile(args){
   if(result.status!==0)throw Error(result.stdout+result.stderr);
 }
 const suites={
+  'image-resample':[resolve(root,'cpp/game/ImageResample.cpp')],
   'graphics-projection':[resolve(root,'cpp/game/GraphicsMath.cpp')],
   'audio-pitch':[],
   'frame-schedule':[],
@@ -39,7 +40,10 @@ const suites={
     ...['BulletManager','BulletExtras','BulletPattern','Rng','Timer','GameMath'].map(n=>resolve(root,'cpp/game',n+'.cpp')),
     resolve(common,'src/netplay/RollbackJournal.cpp')],
 };
+const requested=process.argv.slice(2);
+for(const name of requested)if(!Object.hasOwn(suites,name))throw Error('Unknown component suite: '+name);
 for(const [suite,implementation] of Object.entries(suites)){
+  if(requested.length&&!requested.includes(suite))continue;
   const wasm=resolve(out,suite+'.wasm');
   const sources=[resolve(root,'tests/multiplayer',suite+'.cpp'),...implementation];
   // RTTI is a test oracle for dynamic-type preservation only. Production
@@ -54,6 +58,8 @@ for(const [suite,implementation] of Object.entries(suites)){
     wasmSha256:sha(bytes),compiler:spawnSync(compiler,['--version'],{encoding:'utf8',windowsHide:true}).stdout.trim(),
     flags,headers:headerHashes,sources:Object.fromEntries(sources.map(p=>[p,sha(readFileSync(p))]))},null,2)+'\n');
 }
-compile([...flags,'-fno-rtti','-fsyntax-only',resolve(root,'cpp/multiplayer/DynamicState.cpp'),
-  ...['CharacterAttacks','FieldAttacks','MystiaAttacks','AttackQueue'].map(n=>resolve(root,'cpp/game',n+'.cpp'))]);
-console.log('Production attack constructors and checkpoint adapters compile without RTTI: PASS');
+if(!requested.length||requested.includes('dynamic-state')){
+  compile([...flags,'-fno-rtti','-fsyntax-only',resolve(root,'cpp/multiplayer/DynamicState.cpp'),
+    ...['CharacterAttacks','FieldAttacks','MystiaAttacks','AttackQueue'].map(n=>resolve(root,'cpp/game',n+'.cpp'))]);
+  console.log('Production attack constructors and checkpoint adapters compile without RTTI: PASS');
+}

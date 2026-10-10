@@ -4,6 +4,7 @@
 #include "AudioDevice.hpp"
 #include "FontDevice.hpp"
 #include "../game/GamePresentation.hpp"
+#include "../game/BulletDraw.hpp"
 #include "../game/TitleMenus.hpp"
 #include "../game/GameSession.hpp"
 #include "../game/MusicCatalog.hpp"
@@ -353,6 +354,12 @@ TH09_EXPORT("th09_adonis_info") const u32* th09_adonis_info(){
     data[2]=adonis_snapshots;data[3]=rollback.Channel().AdonisStatistics().Adjustments();
     data[4]=u32(rollback.Channel().AdonisStatistics().TotalDelayUs());data[5]=adonis_waits;return data;
 }
+// Read-only diagnostics: actual input shortage is distinct from pending replay.
+TH09_EXPORT("th09_network_pacing_info") const u32* th09_network_pacing_info(){
+    static u32 data[6];data[0]=1;data[1]=rollback.MissingRemoteInputs();
+    data[2]=u32(rollback.NetworkIntervalScale()*1000+.5);data[3]=u32(rollback.IntervalScale()*1000+.5);
+    data[4]=rollback.PredictionFrontier();data[5]=rollback.RemoteInputFrontier();return data;
+}
 TH09_EXPORT("th09_rollback_enable") u32 th09_rollback_enable(u32 seed,u32 side,u32 idLow,u32 idHigh,u32 abi,u32 inputDelay){
     if(rollback_active||!probe||!network.active||side>1||inputDelay>9)return 0;
     for(auto& frame:rollback_frames){frame.number=Netplay::INVALID_FRAME;frame.captured=false;frame.sounds.clear();}
@@ -438,8 +445,24 @@ TH09_EXPORT("th09_game_close") void th09_game_close(){rollback_active=false;roll
 TH09_EXPORT("th09_music_enabled") void th09_music_enabled(u32 enabled){if(probe){probe->host_music_enabled=enabled!=0;probe->title_configuration();}}
 TH09_EXPORT("th09_game_restart") u32 th09_game_restart(){if(!probe||!probe->in_title)return 0;clear_inputs();probe->requested_transition=-1;probe->settings.game_flags=0;return probe->return_title(false);}
 u32 rollback_tick(u32 render){
+    // Recovery and transport work consume the same callback budget as replay.
+    const double start=emscripten_get_now();
     if(!th09_rollback_pump())return 0;
     if(!rollback.Ready())return 2;
+    const auto capture=[](){
+#if TH09_DEVELOPMENT_HARNESS
+        if(rollback.Frame()>=rollback_test_limit)return true;
+#endif
+        if(!rollback.NeedsCapture())return true;
+        u16 keys[3]{};sample_keys(keys);Netplay::FrameInput in(keys[2]);
+        if(probe->session){const auto& m=probe->session->motion_input[network.side];if(m.enabled){in.analogMode=m.target?Netplay::AnalogMode::DirectTouch:Netplay::AnalogMode::Joystick;in.x=m.x;in.y=m.y;in.unlimited=m.unlimited;in.touchUsed=true;}}
+        if(!rollback.Capture(in,std::uint64_t(emscripten_get_now()))){probe->error=rollback.Error();return false;}
+        return true;
+    };
+    // Sample the visible frontier once, before recovery can span callbacks.
+    // The peer receives this input while we reconcile; historical ticks reuse
+    // retained packets and never consume physical input or gesture edges.
+    if(!capture())return 0;
     auto correction=rollback.RollbackFrame();
     if(correction!=Netplay::INVALID_FRAME){
         rollback_catchup=std::max(rollback_catchup,rollback.Frame());
@@ -449,16 +472,11 @@ u32 rollback_tick(u32 render){
     }
     // One callback starts at most eight recovery ticks. Its caller also has a
     // wall-time budget; physical input is never sampled on these replay ticks.
-    const double start=emscripten_get_now();
     for(unsigned count=0;count<9;++count){
 #if TH09_DEVELOPMENT_HARNESS
         if(rollback.Frame()>=rollback_test_limit)break;
 #endif
-        if(rollback.NeedsCapture()){
-            u16 keys[3]{};sample_keys(keys);Netplay::FrameInput in(keys[2]);
-            if(probe->session){const auto& m=probe->session->motion_input[network.side];if(m.enabled){in.analogMode=m.target?Netplay::AnalogMode::DirectTouch:Netplay::AnalogMode::Joystick;in.x=m.x;in.y=m.y;in.unlimited=m.unlimited;in.touchUsed=true;}}
-            if(!rollback.Capture(in,std::uint64_t(emscripten_get_now()))){probe->error=rollback.Error();return 0;}
-        }
+        if(!capture())return 0;
         auto decision=rollback.Prepare();if(!decision.canAdvance){++adonis_waits;return 2;}
         const u32 f=rollback.Frame();const auto confirmed=rollback.ConfirmedThrough();
         const bool reconciled=rollback.InputsReconciledBeforeNext();
@@ -732,6 +750,68 @@ TH09_EXPORT("th09_probe_bullet_boundary") u32 th09_probe_bullet_boundary(){
         for(unsigned side=0;side<2;++side)good=!std::memcmp(bytes[side].data(),battle.fields[side].bullets->pool.data(),bytes[side].size())&&good;
         for(unsigned side=0;side<2;++side)good=!std::memcmp(visualBytes[side].data(),battle.fields[side].bullet_visuals->instances.data(),visualBytes[side].size())&&good;
         good=hash()==initial&&good;
+    }
+    // Exercise the real Draw first-write barrier across VM identities 63/64,
+    // another page, and the final sentinel VM. Reuse ONE physical record both
+    // after Restore and after confirmation-like retirement without Restore.
+    struct DrawBarrier final:BulletDrawServices {
+        u32 calls=0;
+        void begin_field()override{}
+        void upper_effects()override{}
+        void draw_animation(AnmVm& vm)override{
+            ++calls;vm.matrix3.m[3][3]=float(91+calls);vm.reserved29a[9]^=0xa5;
+        }
+    };
+    multiplayer::WorldState pages;
+    constexpr std::size_t pageBytes=64*sizeof(AnmVm);
+    for(u32 pass=0;pass<3;++pass){
+        auto& field=battle.fields[0];auto& pool=field.bullets->pool;auto& visual=*field.bullet_visuals;
+        field.bullets->reset_pool();field.bullets->draw_heads.fill(-1);
+        for(auto& laser:field.lasers->pool)laser.active=false;
+        const bool tail=pass!=1;const u32 tailSlot=pass==2?BulletManager::update_count:25;
+        if(!visual.prepare(pool[12],12,0,0,8))return 0;
+        pool[12].state=4;pool[12].position={float(13+pass),17,0};pool[12].draw_next=tail?i32(tailSlot):-1;
+        if(tail){
+            if(!visual.prepare(pool[tailSlot],tailSlot,0,0,pass==2?0:8))return 0;
+            pool[tailSlot].state=pass==2?5:4;pool[tailSlot].position={19,float(23+pass),0};pool[tailSlot].draw_next=-1;
+        }
+        field.bullets->draw_heads[0]=12;
+        // Distinct bytes on EVERY reuse expose stale bitmap entries and stale
+        // page contents even in VMs that this pass never writes.
+        for(auto& f:battle.fields)for(auto& slot:f.bullet_visuals->instances)
+            for(auto& vm:slot)vm.reserved29a[0]=u8(0x31+pass);
+        const auto baseline=hash();
+        for(unsigned side=0;side<2;++side){
+            auto& b=battle.fields[side].bullets->pool;std::memcpy(bytes[side].data(),b.data(),bytes[side].size());
+            auto& v=battle.fields[side].bullet_visuals->instances;std::memcpy(visualBytes[side].data(),v.data(),visualBytes[side].size());
+        }
+        if(!pages.Save(session))return 0;
+        const auto beforeBytes=pages.FirstWriteBytes(),beforeBlocks=pages.FirstWriteBlocks(),beforeTotal=pages.Bytes();
+        DrawBarrier draw;draw.geometry=battle.state.geometry[0];
+        BulletDraw::draw(*field.bullets,visual,*field.lasers,draw);
+        pool[12].state=5; // Already captured as a live Bullet by Save.
+        BulletDraw::draw(*field.bullets,visual,*field.lasers,draw);
+        const std::size_t drawn=2+std::size_t(tail);
+        good=draw.calls==2*(1+u32(tail))&&good;
+        good=pages.FirstWriteBlocks()==beforeBlocks+drawn&&good;
+        good=pages.FirstWriteBytes()==beforeBytes+drawn*sizeof(AnmVm)&&good;
+        // The full-slot write must keep the two Draw-captured VM originals.
+        if(!visual.change_type(pool[12],12,1,0)||!visual.change_type(pool[12],12,1,0))return 0;
+        const std::size_t captured=drawn+3;
+        good=pages.FirstWriteBlocks()==beforeBlocks+captured&&good;
+        good=pages.FirstWriteBytes()==beforeBytes+captured*sizeof(AnmVm)&&good;
+        good=pages.Bytes()==beforeTotal+captured*sizeof(AnmVm)&&good;
+        good=pages.VisualPageCapacityBytes()==(pass==2?4:3)*pageBytes&&good;
+        if(!pages.Seal())return 0;
+        if(pass==1)continue; // The next Save must retire/reset this record itself.
+        if(!pages.Restore())return 0;
+        good=pages.FirstWriteBytes()==0&&pages.FirstWriteBlocks()==0&&good;
+        good=pages.VisualPageCapacityBytes()==(pass==2?4:3)*pageBytes&&good;
+        for(unsigned side=0;side<2;++side){
+            good=!std::memcmp(bytes[side].data(),battle.fields[side].bullets->pool.data(),bytes[side].size())&&good;
+            good=!std::memcmp(visualBytes[side].data(),battle.fields[side].bullet_visuals->instances.data(),visualBytes[side].size())&&good;
+        }
+        good=hash()==baseline&&good;
     }
     return original.Restore()&&good;
 }

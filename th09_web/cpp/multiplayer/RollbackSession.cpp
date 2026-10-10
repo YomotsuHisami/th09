@@ -52,6 +52,7 @@ bool RollbackSession::Configure(const Netplay::SessionConfig& session,std::uint6
     if (!core_.Reset(config) || !gate_.Reset(negotiated) || !channel_.BeginSession(negotiated, now, policy))
         return Fail("TH09 rollback bootstrap failed");
     configured_ = true;
+    networkIntervalScale_ = 1; networkPaceAt_ = now;
     return true;
 }
 void RollbackSession::Clear() {
@@ -59,6 +60,7 @@ void RollbackSession::Clear() {
     next_ = replayEnd_ = captures_ = corrections_ = resimulated_ = 0;
     configured_ = failed_ = invalidInput_ = false; error_ = "";
     mode_ = Netplay::AdonisMode::Rollback; inputDelay_ = 0; phaseDebtMs_ = 0;
+    networkIntervalScale_ = 1; networkPaceAt_ = 0;
     startup_=Netplay::AdonisStartup{};startupSession_={};startupNowUs_=0;
     measuring_=measured_=false;startupPending_.clear();
 }
@@ -91,6 +93,40 @@ bool RollbackSession::PumpStartup(std::uint64_t now,std::uint64_t measurementNow
     return true;
 }
 
+std::uint32_t RollbackSession::RemoteInputFrontier() const {
+    const auto confirmed = core_.ConfirmedThroughAllRemotes();
+    return confirmed == Netplay::INVALID_FRAME ? 0 : confirmed + 1;
+}
+std::uint32_t RollbackSession::MissingRemoteInputs() const {
+    const auto frontier = PredictionFrontier(), actual = RemoteInputFrontier();
+    return frontier > actual ? frontier - actual : 0;
+}
+double RollbackSession::IntervalScale() const {
+    const auto phase = channel_.IntervalScale();
+    return Ready() && mode_ == Netplay::AdonisMode::Rollback && networkIntervalScale_ > 1
+        ? std::max(phase, networkIntervalScale_) : phase;
+}
+void RollbackSession::UpdateNetworkPacing(std::uint64_t now, bool expectsInput) {
+    if (!Ready() || mode_ != Netplay::AdonisMode::Rollback || !expectsInput) {
+        networkIntervalScale_ = 1; networkPaceAt_ = now;
+        return;
+    }
+    // Zero is a valid clock origin. Repeated pumps earn no extra time; the
+    // channel rejects reversed clocks before this update can run.
+    if (now <= networkPaceAt_) return;
+    const double elapsed = double(now - networkPaceAt_);
+    networkPaceAt_ = now;
+    // Rewinding next_ does not create prediction room. Use the highest live
+    // frontier and contiguous actual remote inputs, even during correction.
+    const auto outstanding = MissingRemoteInputs();
+    const double target = 1 + std::clamp((double(outstanding) - 4) / 3, 0.0, 1.0);
+    // Only future wall-clock scheduling changes. Capture ownership, the
+    // eight-frame prediction bound and 60 Hz logical steps stay unchanged.
+    if (target > networkIntervalScale_)
+        networkIntervalScale_ = std::min(target, networkIntervalScale_ + elapsed / 50);
+    else
+        networkIntervalScale_ = std::max(target, networkIntervalScale_ - elapsed / 150);
+}
 double RollbackSession::PacedElapsedMs(double elapsedMs) {
     if (!std::isfinite(elapsedMs) || elapsedMs < 0) return 0;
     phaseDebtMs_ += channel_.TakeAdonisDelayMs();
@@ -105,6 +141,9 @@ bool RollbackSession::Pump(std::uint64_t now, bool expectsInput,std::uint64_t me
     if (!configured_ || failed_) return false;
     if (!channel_.Pump(gate_, core_, now, expectsInput && gate_.CanStart())) return Fail(channel_.ErrorText());
     if (invalidInput_) return Fail("Invalid TH09 peer input");
+    // Drain received packets before measuring shortage: a slow local callback
+    // must not mistake queued, already available input for a network deficit.
+    UpdateNetworkPacing(now, expectsInput);
     return !failed_;
 }
 bool RollbackSession::Verify(std::uint32_t frame,std::uint32_t hash) {

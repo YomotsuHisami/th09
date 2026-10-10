@@ -1,7 +1,20 @@
 #include "WorldState.hpp"
 
 namespace th09::multiplayer {
-WorldState::WorldState() { enemies.reserve(260);effects.reserve(1400);attacks.reserve(257);good=journal.Reset({1,32*1024*1024,8192,true,true}); }
+WorldState::WorldState() { enemies.reserve(260);effects.reserve(1400);attacks.reserve(257);good=journal.Reset({1,FirstWriteByteBudget,FirstWriteBlockBudget,true,true}); }
+#if !defined(NDEBUG) && (!defined(TH09_DEVELOPMENT_HARNESS) || TH09_DEVELOPMENT_HARNESS)
+bool WorldState::JournalRangeDisjoint(const void* data,std::size_t size) const {
+    if(!size)return true;const auto address=reinterpret_cast<std::uintptr_t>(data);
+    for(std::size_t i=0;i<bulletRangeCount;++i){
+        const auto& instances=bulletRanges[i].visuals->instances;
+        const auto base=reinterpret_cast<std::uintptr_t>(instances.data());
+        const auto bytes=instances.size()*sizeof(instances[0]);
+        // Compare differences rather than overflowing either range's end.
+        if(address<base?size>base-address:address-base<bytes)return false;
+    }
+    return true;
+}
+#endif
 void WorldState::BeforeEnemy(EclVm& e){
     for(std::size_t i=0;i<enemyCount;++i)if(enemies[i].first==&e)return;
     if(enemyCount==enemies.size())enemies.emplace_back();
@@ -48,9 +61,17 @@ void WorldState::BeforeBulletVisual(BulletVisuals& x,std::size_t index) {
 void WorldState::BeforeBulletAnimation(BulletVisuals& x,std::size_t index,std::size_t animation) {
     if(index>=x.instances.size()||animation>=x.instances[index].size()){good=false;return;}
     for(std::size_t i=0;i<bulletRangeCount;++i)if(bulletRanges[i].visuals==&x){
-        auto& saved=bulletRanges[i].visualSaved;const auto at=index*x.instances[index].size()+animation;
+        auto& range=bulletRanges[i];auto& saved=range.visualSaved;
+        const auto at=index*x.instances[index].size()+animation;
         if(at>=saved.size()){good=false;return;}if(saved[at])return;
-        auto& vm=x.instances[index][animation];if(Touch(&vm,sizeof(vm)))saved.set(at);
+        if(!good||journal.Failed()||!journal.IsFrameOpen()||
+            FirstWriteBytes()>FirstWriteByteBudget-sizeof(AnmVm)||
+            FirstWriteBlocks()>=FirstWriteBlockBudget){good=false;return;}
+        auto& page=range.visualPages[at/BulletRange::VMsPerPage];
+        if(!page){page.reset(new u8[BulletRange::PageBytes]);++visualPageCount;}
+        const auto offset=(at%BulletRange::VMsPerPage)*sizeof(AnmVm);
+        std::memcpy(page.get()+offset,&x.instances[index][animation],sizeof(AnmVm));
+        saved.set(at);range.visualOrder[range.visualCount++]=u16(at);++visualFirstWriteBlocks;
         return;
     }
     good=false;
@@ -104,7 +125,7 @@ void WorldState::Recording(ReplayArchive& x) {
     }
 }
 bool WorldState::Save(GameSession& s) {
-    Unbind();hashParts.clear();digest={};if(journal.IsFrameOpen())journal.EndFrame();journal.DiscardBefore(1);undo.clear();enemyCount=effectCount=attackCount=0;effectRangeCount=effectSlots=0;effectSaved.reset();attackSaved.reset();ownedBytes=0;good=journal.BeginFrame(0);
+    Unbind();hashParts.clear();digest={};if(journal.IsFrameOpen())journal.EndFrame();journal.DiscardBefore(1);undo.clear();enemyCount=effectCount=attackCount=0;effectRangeCount=effectSlots=0;effectSaved.reset();attackSaved.reset();ownedBytes=visualFirstWriteBlocks=0;good=journal.BeginFrame(0);
     bulletRangeCount=0;
     // This adapter is specifically the stable live two-human versus world.
     if(!s.world||s.is_replay||s.world->rules.mode!=GameMode::versus)return good=false;
@@ -128,7 +149,7 @@ bool WorldState::Save(GameSession& s) {
         else if(!sparse)Touch(bullets.pool.data(),bullets.pool.size()*sizeof(bullets.pool[0]));
         else {
             if(bulletRangeCount>=bulletRanges.size()||bullets.pool.size()!=BulletManager::update_count+1)return good=false;
-            auto& range=bulletRanges[bulletRangeCount++];range.owner=&bullets;range.visuals=f.bullet_visuals.get();range.visualSaved.reset();
+            auto& range=bulletRanges[bulletRangeCount++];range.owner=&bullets;range.visuals=f.bullet_visuals.get();range.visualSaved.reset();range.visualCount=0;
             good=range.capture.Capture(bullets.pool.data(),[](const Bullet& b){return b.state!=0;},
                 [this](void* p,std::size_t n){return Touch(p,n);})&&good;
             // Hazards can retain a slot across a paused/frozen player update.
@@ -171,6 +192,20 @@ bool WorldState::Save(GameSession& s) {
 bool WorldState::Restore() {
     Unbind();
     if(!Good()||(journal.IsFrameOpen()&&!journal.EndFrame())||!journal.UndoTo(0))return false;
+    // VM ranges are disjoint from the journal and from each other. Restore all
+    // POD before any owning/texture undo can observe it, as the journal did.
+    for(std::size_t i=0;i<bulletRangeCount;++i){
+        auto& range=bulletRanges[i];
+        for(std::size_t n=range.visualCount;n;--n){
+            const auto at=range.visualOrder[n-1];
+            const auto* page=range.visualPages[at/BulletRange::VMsPerPage].get();
+            assert(page&&range.visualSaved[at]);
+            std::memcpy(&range.visuals->instances[at/5][at%5],
+                page+(at%BulletRange::VMsPerPage)*sizeof(AnmVm),sizeof(AnmVm));
+        }
+        range.visualSaved.reset();range.visualCount=0;
+    }
+    visualFirstWriteBlocks=0;
     for(auto& action:undo)action();
     for(std::size_t i=0;i<enemyCount;++i){auto& e=enemies[i];good=e.second.Restore(*e.first)&&good;}
     for(std::size_t i=0;i<effectCount;++i){auto& e=effects[i];good=e.second.Restore(*e.first)&&good;}
