@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const compiled = resolve(root, process.env.TH09_OUTPUT || 'artifacts/sdl-release');
 const variant = process.argv.includes('--multiplayer') ? 'multiplayer' : 'normal';
-const output = resolve(root, variant === 'multiplayer' ? 'build-eagler-multiplayer' : 'build-eagler');
+const output = process.env.EAGLER_RUNTIME_OUTPUT ? resolve(process.env.EAGLER_RUNTIME_OUTPUT) : resolve(root, variant === 'multiplayer' ? 'build-eagler-multiplayer' : 'build-eagler');
 const native = process.env.TH09_RUNTIME_ASSETS ? resolve(process.env.TH09_RUNTIME_ASSETS) : resolve(root, 'assets/sdl-native');
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 const inputs = [
