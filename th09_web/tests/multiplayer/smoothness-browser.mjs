@@ -29,6 +29,7 @@ const release=process.argv.includes('--release'),profile=process.env.PROFILE_CPU
 const liveCost=process.env.LIVE_COST==='1';assert.ok(!liveCost||!release,'LIVE_COST requires a DEV build; release is unsupported');
 const startupTrace=process.env.STARTUP_TRACE==='1';
 const headedControl=process.env.HEADED_CONTROL==='1';
+const schedulerTrace=process.env.CHROME_SCHED_TRACE==='1';
 const browserArgs=['--enable-gpu','--use-gl=angle','--use-angle=d3d11','--autoplay-policy=no-user-gesture-required'];
 // Keep Playwright's other headless defaults while changing only the window mode.
 const headlessAuxiliaryArgs=['--hide-scrollbars','--mute-audio','--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4'];
@@ -52,6 +53,7 @@ const audioOutput=process.env.AUDIO_OUTPUT==='1';
 const rafDiagnostics=process.env.RAF_DIAGNOSTICS==='1';
 const hostLoad=process.env.HOST_LOAD==='1';
 const networkTrace=process.env.NETWORK_TRACE==='1';
+assert.ok(!schedulerTrace||(release&&rafDiagnostics&&!profile&&!liveCost&&!networkTrace),'Scheduler trace requires release/RAF diagnostics and excludes CPU/live/browser-packet profiling');
 assert.ok(!networkTrace||fallback,'NETWORK_TRACE currently requires --relay');
 const responsiveness=process.env.RESPONSIVENESS==='1';
 assert.ok(!responsiveness||inputMode==='wall-clock','Responsiveness requires independent wall-clock input');
@@ -72,6 +74,7 @@ if(hostLoad)identity.hostLoadProbe=sha(fileURLToPath(new URL('./host-load-probe.
 if(networkTrace)identity.networkTransportProbe=sha(fileURLToPath(new URL('./network-transport-probe.mjs',import.meta.url)));
 if(liveCost)identity.callbackCostProbe=sha(fileURLToPath(new URL('./callback-cost-probe.mjs',import.meta.url)));
 if(startupTrace)identity.startupTransportProbe=sha(fileURLToPath(new URL('./startup-transport-probe.mjs',import.meta.url)));
+if(schedulerTrace)identity.chromeSchedulerTrace=sha(fileURLToPath(new URL('./chrome-scheduler-trace.mjs',import.meta.url)));
 if(relayDiagnostics)for(const [key,file] of [['relayTransportProbe','relay-transport-probe.mjs'],['relayTransportFixture','relay-transport-fixture.mjs'],['relayTransportController','relay-transport-controller.mjs']])identity[key]=sha(fileURLToPath(new URL('./'+file,import.meta.url)));
 if(relayDiagnostics)identity.relayStartupProbe=sha(fileURLToPath(new URL('./relay-startup-probe.mjs',import.meta.url)));
 const port=await new Promise(r=>{const s=net.createServer();s.listen(0,'127.0.0.1',()=>{const p=s.address().port;s.close(()=>r(p));});});
@@ -81,10 +84,28 @@ const relay=diagnosticRelay?.process||spawn(process.execPath,[relayPath],{window
 if(Number.isInteger(relay.pid))hostProbe?.registerKnownProcess(relay.pid,'netplay-relay');
 hostProbe?.mark('relay-spawned');
 let relayLog='',host,retainedResults,relayTraceSnapshot,relayTraceError;const browsers=[],pages=[],sessions=[],errors=[];
+const schedulerTraces=[];let schedulerTraceEvidence,schedulerTraceFinish;
 const parameters={limit,delay,jitter,slow,dropEvery,release,profile,fallback,inputMode,audioOutput,responsiveness,burstAt,burstFor,burstDelay,rafDiagnostics,hostLoad,networkTrace,impairmentSite,relayDiagnostics,expectedRtcPath,liveCost,clientSendMode:impairmentSite==='client'?'timer':'synchronous',burstClock:impairmentSite==='relay'?'relay-first-nonempty-input-receive':'browser-active',cpuThrottle:{ratesBySide:[1,slow],configuredAfter:'openProbe',scope:'openProbe and after-open counters precede CPU throttling; subsequent netplay setup and first game callback use the configured per-side rates.'}};
 const distribution=values=>{const a=values.slice().sort((a,b)=>a-b);return {count:a.length,total:a.reduce((s,n)=>s+n,0),p50:a[Math.floor(a.length*.5)]??null,p95:a[Math.floor(a.length*.95)]??null,p99:a[Math.floor(a.length*.99)]??null,max:a.at(-1)??null,over25ms:a.filter(n=>n>25).length,over50ms:a.filter(n=>n>50).length,over100ms:a.filter(n=>n>100).length,over250ms:a.filter(n=>n>250).length};};
 parameters.startupTrace=startupTrace;parameters.relayInputDiagnostics=relayInputDiagnostics;
 parameters.headedControl=headedControl;
+parameters.chromeSchedulerTrace=schedulerTrace;
+async function finishSchedulerTrace(reason){
+ if(!schedulerTrace)return undefined;
+ if(!schedulerTraceFinish)schedulerTraceFinish=(async()=>{
+  const outcomes=await Promise.allSettled(browsers.map(async(_,side)=>{
+   const controller=schedulerTraces[side];
+   const snapshot=controller?await controller.stop(reason):{version:1,enabled:true,status:'not-started',collectionValid:false,events:[],errors:[{kind:'trace-controller-unavailable'}]};
+   const path=resolve(out,`${label}-P${side+1}-scheduler-trace.json`);
+   writeFileSync(path,JSON.stringify(snapshot),{flag:'wx'});
+   const {events,...metadata}=snapshot;
+   return {...metadata,side,artifact:{path,bytes:statSync(path).size,sha256:sha(path)}};
+  }));
+  schedulerTraceEvidence=outcomes.map((result,side)=>result.status==='fulfilled'?result.value:{version:1,enabled:true,side,status:'finalization-failed',collectionValid:false,errors:[{kind:'stop-or-artifact-write-failed'}]});
+  return schedulerTraceEvidence;
+ })();
+ return schedulerTraceFinish;
+}
 if(headedControl)parameters.headedLaunch={headless:false,explicitArgs:browserLaunchOptions.args,preservedHeadlessAuxiliaryArgs:headlessAuxiliaryArgs,scope:'Window-mode environment control, not a production code change; proxy, input, audio/context, CPU setup, and native GPU arguments are unchanged.'};
 const headedControlEvidence=headedControl?{launches:[],windows:[],windowObservationLimit:6,scope:'Only the two browsers created by this harness. CDP supplies the unique browser PID; CIM reads only that PID. Save only command-line SHA256 and allowlisted flags, never raw command lines, executable/profile paths, or process lists. Missing identity observation is explicit and cannot establish a matched environment control. Window bounds, visibility/focus and existing lifecycle events do not prove physical scanout, continuous foreground visibility, or non-overlap. No window is moved or brought to front.'}:undefined;
 function splitWindowsCommandLine(line){
@@ -348,6 +369,13 @@ try {
   if(headedControl)await recordHeadedWindow(page,cdp,side,'setup-complete');
   hostProbe?.mark(`browser-${side+1}-setup-complete`);
  }
+ if(schedulerTrace){
+  const {startChromeSchedulerTrace}=await import('./chrome-scheduler-trace.mjs');
+  const started=await Promise.allSettled(browsers.map((browser,side)=>startChromeSchedulerTrace({enabled:true,browser,page:pages[side],ownedBrowsers:browsers,side,sourceFiles:{harness:fileURLToPath(import.meta.url)}})));
+  for(let side=0;side<started.length;++side)if(started[side].status==='fulfilled')schedulerTraces[side]=started[side].value;
+  assert.ok(started.every(row=>row.status==='fulfilled'),'Scheduler trace controller initialization failed');
+  assert.ok(schedulerTraces.every(controller=>{const state=controller.snapshot();return state.availability.available===true&&state.status==='recording';}),'Scheduler trace unavailable before gameplay');
+ }
  hostProbe?.mark('netplay-setup-start');
  await pages[0].evaluate(async ({port,members})=>{
   const wait=async test=>{const start=performance.now();while(!test()){const closed=window.lobbies?.find(ws=>ws.readyState===WebSocket.CLOSED);if(closed)throw Error('lobby closed '+JSON.stringify(closed.failure));if(performance.now()-start>10000)throw Error('lobby timeout');await new Promise(r=>setTimeout(r,10));}};
@@ -358,7 +386,7 @@ try {
   for(const ws of lobbies)ws.send(JSON.stringify({type:'set-ready',ready:true}));await wait(()=>lobbies[0].latest.room?.seats.slice(0,2).every(s=>s?.ready));
   lobbies[0].send(JSON.stringify({type:'start'}));await wait(()=>lobbies[0].latest.type==='start');
  },{port,members});
- for(let side=0;side<2;++side)await pages[side].evaluate(async ({side,port,limit,inputMode,member,responsiveness,rafDiagnostics,networkTrace,liveCost,startupTrace})=>{
+ for(let side=0;side<2;++side)await pages[side].evaluate(async ({side,port,limit,inputMode,member,responsiveness,rafDiagnostics,networkTrace,liveCost,startupTrace,schedulerTrace})=>{
   const {SharedNetplay}=await import('/app/shared-netplay.mjs');
   const options={netplayUrl:`ws://127.0.0.1:${port}/?room=th09mp-0998&run=1&players=2&player=${side}&member=${member}`,netplayPlayer:side,netplayPlayerCount:2,netplaySeed:12345,netplayDifficulty:3,netplayLoadouts:[{character:0},{character:1}],netplayIceServers:[],netplaySpectatorCount:0};
   const m=window.measure={samples:[],frameDetails:[],networkPacing:[],loads:[],notices:[],closed:[],inputTape:[],started:0,ended:0,limit,audioStart:0,finished:false};
@@ -396,7 +424,7 @@ try {
   core.onGameFrame=(ok,ms)=>{
    window.audioOutputProbe?.observe(core.SDL3,play.active&&!m.ended);
    play.frame();if(!play.active||m.ended)return;const now=performance.now();
-   if(!m.started){m.started=now;m.audioStart=core.SDL3?.audioContext?.currentTime||0;if(responsiveness)window.responsivenessProbe.start(core,side);if(startupTrace)window.startupTransportProbe.mark('first-active');}
+   if(!m.started){m.started=now;m.audioStart=core.SDL3?.audioContext?.currentTime||0;if(responsiveness)window.responsivenessProbe.start(core,side);if(startupTrace)window.startupTransportProbe.mark('first-active');if(schedulerTrace)window.chromeSchedulerTraceProbe?.mark('first-active');}
    updateInput(now);const s=readStats(),at=core._th09_game_metrics()/4,n=core.HEAPU32[at+9],phase=sessionStatus()[0];
    if(responsiveness)window.responsivenessProbe.onFrame(s,n,phase,now);
    if(s[0]>=180&&!m.sdlStart){const p=core._sdl_stats()/4;m.sdlStart=Array.from(core.HEAPU32.subarray(p,p+17));}
@@ -424,7 +452,7 @@ try {
   if(startupTrace)window.startupTransportProbe.mark('before-connect');
   await play.connect(options);
   if(startupTrace)window.startupTransportProbe.mark('after-connect');
- },{side,port,limit,inputMode,member:members[side],responsiveness,rafDiagnostics,networkTrace,liveCost,startupTrace});
+ },{side,port,limit,inputMode,member:members[side],responsiveness,rafDiagnostics,networkTrace,liveCost,startupTrace,schedulerTrace});
  if(profile)for(const cdp of sessions){await cdp.send('Profiler.enable');await cdp.send('Profiler.setSamplingInterval',{interval:500});await cdp.send('Profiler.start');}
  hostProbe?.mark('formal-poll-start');
  const began=Date.now(),timeout=limit/60*1000*3+20000;
@@ -474,6 +502,7 @@ try {
    audioOutput:window.audioOutputProbe?.snapshot(),responsiveness:window.responsivenessProbe?.snapshot(),rafDiagnostics:window.rafDiagnosticProbe?.snapshot(),networkTransport:window.networkTransportProbe?.snapshot(),liveCallbackCosts:window.liveCallbackCostProbe?.snapshot(),lifecycle:window.gameLifecycle,sdl,confirmedHashes:window.confirmedHashTrace||[]};
  },release)));
  retainedResults=results;hostProbe?.mark('browser-sample-capture-complete');
+ if(schedulerTrace)await finishSchedulerTrace('capture-stop');
  if(headedControl)await Promise.all(pages.map((page,side)=>recordHeadedWindow(page,sessions[side],side,'measurement-complete')));
  if(diagnosticRelay)relayTraceSnapshot=await diagnosticRelay.snapshot({stop:true});
  if(relayDiagnostics){
@@ -534,15 +563,19 @@ try {
  hostProbe?.mark('success-report-ready');const hostLoadSnapshot=await hostProbe?.stop();
  const report={passed:true,scope:'Two separate desktop Chromium processes; native GPU; real '+(fallback?'WebSocket relay':'RTC')+' with '+(impairmentSite==='client'?'seeded application-send impairment on input and repair lanes':impairmentSite==='relay'?'synchronous client send and seeded relay-process input impairment; burst anchored to relay first input receive':'synchronous client send; no injected send timers')+'; '+(inputMode==='tape'?'wire-verified frame-indexed hosted-key tape':'wall-clock synthetic keyboard')+(audioOutput?'; sampled SDL output blocks, not speaker/acoustic acceptance':'; audio clock only, not acoustic acceptance'),presentationMeasurement:'RAF timestamps of callbacks with a new renderer submission; NOT physical scanout. Completion gaps are reported separately because varying callback work is not itself a missed vsync.',identity,parameters,browsers:browsers.map(b=>b.version()),sameFrame,finalComparable,confirmedChecks,summary,results,errors,relayLog,relayTransport:relayTraceSnapshot,hostLoad:hostLoadSnapshot};
  if(headedControl){headedControlEvidence.identityVerified=headedControlEvidence.launches.length===2&&headedControlEvidence.launches.every(row=>row.verified);report.headedControl=headedControlEvidence;}
+ if(schedulerTrace)report.chromeSchedulerTrace=schedulerTraceEvidence;
  writeFileSync(resolve(out,label+'-report.json'),JSON.stringify(report,null,2));console.log(JSON.stringify({identity,parameters,sameFrame,summary,hashes:results.map(r=>r.hash)}));
 }catch(error){
- hostProbe?.mark('failure-observed');const hostLoadSnapshot=await hostProbe?.stop();
+ hostProbe?.mark('failure-observed');
+ if(schedulerTrace)try{await finishSchedulerTrace('failure');}catch{schedulerTraceEvidence??=[{status:'finalization-failed',collectionValid:false}];}
+ const hostLoadSnapshot=await hostProbe?.stop();
  if(diagnosticRelay)try{relayTraceSnapshot=await diagnosticRelay.snapshot({stop:true});}catch(error){relayTraceError=String(error.stack||error);}
  const partial=await Promise.all(pages.map(async p=>{try{return await p.evaluate(()=>{window.responsivenessProbe?.stop();window.networkTransportProbe?.stop('failure');return {startupTransport:window.startupTransportProbe?.snapshot({stop:true}),measure:window.measure,impairment:window.impairment,stats:window.readStats?.(),audioOutput:window.audioOutputProbe?.snapshot(),responsiveness:window.responsivenessProbe?.snapshot(),rafDiagnostics:window.rafDiagnosticProbe?.snapshot(),networkTransport:window.networkTransportProbe?.snapshot(),liveCallbackCosts:window.liveCallbackCostProbe?.snapshot(),lifecycle:window.gameLifecycle,confirmedHashes:window.confirmedHashTrace};});}catch{return null;}}));
  if(headedControl)await Promise.all(pages.map((page,side)=>recordHeadedWindow(page,sessions[side],side,'failure-observed')));
  if(headedControl)headedControlEvidence.identityVerified=headedControlEvidence.launches.length===2&&headedControlEvidence.launches.every(row=>row.verified);
- writeFileSync(resolve(out,label+'-failure.json'),JSON.stringify({error:error.stack,identity,parameters,partial,results:retainedResults,errors,relayLog,relayTransport:relayTraceSnapshot,relayTraceError,hostLoad:hostLoadSnapshot,headedControl:headedControlEvidence},null,2));throw error;
+ writeFileSync(resolve(out,label+'-failure.json'),JSON.stringify({error:error.stack,identity,parameters,partial,results:retainedResults,errors,relayLog,relayTransport:relayTraceSnapshot,relayTraceError,hostLoad:hostLoadSnapshot,headedControl:headedControlEvidence,chromeSchedulerTrace:schedulerTraceEvidence},null,2));throw error;
 }finally{
+ if(schedulerTrace)await finishSchedulerTrace('finally').catch(()=>{});
  await hostProbe?.stop();
  if(diagnosticRelay)await diagnosticRelay.snapshot({stop:true}).catch(()=>{});
  for(const browser of browsers)await browser.close();if(host){host.netplay.close();await new Promise(r=>host.server.close(r));}relay.kill();
