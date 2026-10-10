@@ -10,6 +10,9 @@ import {fileURLToPath} from 'node:url';
 import {presentationServer} from '../../scripts/presentation-server.mjs';
 import {launchBrowser} from '../../../th10_web/scripts/native/browser-launch.mjs';
 import {installAudioOutputProbe} from './audio-output-probe.mjs';
+import {installResponsivenessProbe} from './responsiveness-probe.mjs';
+import {startHostLoadProbe} from './host-load-probe.mjs';
+import {installNetworkTransportProbe} from './network-transport-probe.mjs';
 
 const root=fileURLToPath(new URL('../../',import.meta.url));
 const label=process.env.RUN_LABEL||'smoothness';
@@ -21,6 +24,13 @@ const slow=integer('CPU_RATE',1,1,8),dropEvery=integer('DROP_EVERY',0,0,1000);
 const release=process.argv.includes('--release'),profile=process.env.PROFILE_CPU==='1',fallback=process.argv.includes('--relay');
 const inputMode=process.env.INPUT_MODE||'wall-clock';assert.ok(['wall-clock','tape'].includes(inputMode));
 const audioOutput=process.env.AUDIO_OUTPUT==='1';
+const rafDiagnostics=process.env.RAF_DIAGNOSTICS==='1';
+const hostLoad=process.env.HOST_LOAD==='1';
+const networkTrace=process.env.NETWORK_TRACE==='1';
+assert.ok(!networkTrace||fallback,'NETWORK_TRACE currently requires --relay');
+const responsiveness=process.env.RESPONSIVENESS==='1';
+assert.ok(!responsiveness||inputMode==='wall-clock','Responsiveness requires independent wall-clock input');
+const burstAt=integer('BURST_AT_MS',0,0,300000),burstFor=integer('BURST_FOR_MS',0,0,30000),burstDelay=integer('BURST_DELAY_MS',0,0,2000);
 const artifactDirectory=resolve(process.env.PC_BUILD||resolve(root,release?'artifacts/sdl-release':'artifacts/sdl3'));
 const out=resolve(root,'artifacts/multiplayer-tests');mkdirSync(out,{recursive:true});
 const sha=path=>createHash('sha256').update(readFileSync(path)).digest('hex');
@@ -29,26 +39,148 @@ const identity={wasm:sha(wasmPath),harness:sha(fileURLToPath(import.meta.url)),l
 const relayPath=resolve(process.env.EAGLER_RELAY_SOURCE||'D:/workspace/eagler/eagler-touhou/server/netplay-relay.mjs');
 identity.relay=sha(relayPath);identity.shell=sha(resolve(root,'sdl-runtime/shared-netplay.mjs'));
 if(audioOutput)identity.audioProbe=sha(fileURLToPath(new URL('./audio-output-probe.mjs',import.meta.url)));
+if(responsiveness)identity.responsivenessProbe=sha(fileURLToPath(new URL('./responsiveness-probe.mjs',import.meta.url)));
+if(hostLoad)identity.hostLoadProbe=sha(fileURLToPath(new URL('./host-load-probe.mjs',import.meta.url)));
+if(networkTrace)identity.networkTransportProbe=sha(fileURLToPath(new URL('./network-transport-probe.mjs',import.meta.url)));
 const port=await new Promise(r=>{const s=net.createServer();s.listen(0,'127.0.0.1',()=>{const p=s.address().port;s.close(()=>r(p));});});
+const hostProbe=hostLoad?startHostLoadProbe():null;hostProbe?.mark('relay-setup-start');
 const relay=spawn(process.execPath,[relayPath],{windowsHide:true,env:{...process.env,EAGLER_NETPLAY_RELAY_HOST:'127.0.0.1',EAGLER_NETPLAY_RELAY_PORT:String(port),EAGLER_NETPLAY_STUN_URLS:''},stdio:['ignore','pipe','pipe']});
+if(Number.isInteger(relay.pid))hostProbe?.registerKnownProcess(relay.pid,'netplay-relay');
+hostProbe?.mark('relay-spawned');
 let relayLog='',host,retainedResults;const browsers=[],pages=[],sessions=[],errors=[];
-const parameters={limit,delay,jitter,slow,dropEvery,release,profile,fallback,inputMode,audioOutput};
-const distribution=values=>{const a=values.slice().sort((a,b)=>a-b);return {count:a.length,total:a.reduce((s,n)=>s+n,0),p50:a[Math.floor(a.length*.5)]??null,p95:a[Math.floor(a.length*.95)]??null,p99:a[Math.floor(a.length*.99)]??null,max:a.at(-1)??null,over25ms:a.filter(n=>n>25).length,over50ms:a.filter(n=>n>50).length};};
+const parameters={limit,delay,jitter,slow,dropEvery,release,profile,fallback,inputMode,audioOutput,responsiveness,burstAt,burstFor,burstDelay,rafDiagnostics,hostLoad,networkTrace};
+const distribution=values=>{const a=values.slice().sort((a,b)=>a-b);return {count:a.length,total:a.reduce((s,n)=>s+n,0),p50:a[Math.floor(a.length*.5)]??null,p95:a[Math.floor(a.length*.95)]??null,p99:a[Math.floor(a.length*.99)]??null,max:a.at(-1)??null,over25ms:a.filter(n=>n>25).length,over50ms:a.filter(n=>n>50).length,over100ms:a.filter(n=>n>100).length,over250ms:a.filter(n=>n>250).length};};
 try {
  await new Promise((accept,reject)=>{const timer=setTimeout(()=>reject(Error('relay startup timeout')),10000);relay.stdout.on('data',b=>{relayLog=(relayLog+b).slice(-32768);if(relayLog.includes('netplay relay listening')){clearTimeout(timer);accept();}});relay.stderr.on('data',b=>relayLog=(relayLog+b).slice(-32768));relay.on('error',reject);relay.on('exit',code=>reject(Error('relay exit '+code)));});
- host=await presentationServer(0,{release,artifactDirectory});
+ hostProbe?.mark('relay-listening');
+ host=await presentationServer(0,{release,artifactDirectory});hostProbe?.mark('presentation-server-ready');
  for(let side=0;side<2;++side){
+  hostProbe?.mark(`browser-${side+1}-setup-start`);
   const browser=await launchBrowser({args:['--enable-gpu','--use-gl=angle','--use-angle=d3d11','--autoplay-policy=no-user-gesture-required']});browsers.push(browser);
   const page=await browser.newPage();pages.push(page);page.on('pageerror',e=>errors.push({side,error:e.stack}));
   if(audioOutput)await page.addInitScript(installAudioOutputProbe);
-  await page.addInitScript(({delay,jitter,dropEvery,side,fallback})=>{
+  if(responsiveness)await page.addInitScript(installResponsivenessProbe);
+  const installSmoothnessHooks=({delay,jitter,dropEvery,side,fallback,burstAt,burstFor,burstDelay,rafDiagnostics,networkTrace})=>{
    if(fallback)window.RTCPeerConnection=undefined;
+   const lifecycle=window.gameLifecycle=[];
+   const record=event=>lifecycle.push([performance.now(),event,document.visibilityState,document.hasFocus()]);
+   record('init');for(const event of ['visibilitychange','freeze','resume'])document.addEventListener(event,()=>record(event));
+   for(const event of ['pageshow','pagehide'])window.addEventListener(event,()=>record(event));
    const raf=window.requestAnimationFrame.bind(window);
-   window.requestAnimationFrame=callback=>raf(timestamp=>{
-    const previous=window.currentGameRafTimestamp;window.currentGameRafTimestamp=timestamp;
-    try{return callback(timestamp);}finally{window.currentGameRafTimestamp=previous;}
-   });
-   const stats=window.impairment={matched:0,sent:0,dropped:0,pending:0,peakPending:0,planned:[],delivered:[],lanes:{}};
+   if(!rafDiagnostics){
+    window.requestAnimationFrame=callback=>raf(timestamp=>{
+     const previous=window.currentGameRafTimestamp;window.currentGameRafTimestamp=timestamp;
+     try{return callback(timestamp);}finally{window.currentGameRafTimestamp=previous;}
+    });
+   }else{
+    // Observe the existing RAF chain; do not create a heartbeat or reschedule work.
+    // RAF timestamps and actual callback entry use separate fields deliberately.
+    const limits={requests:65536,frames:65536,controls:1024,callbacks:1024,hookErrors:32};
+    const requests=[],frames=[],controls=[],callbacks=[],hookErrors=[],pending=new Map(),known=new WeakMap();
+    const counts={requested:0,entered:0,exited:0,cancelled:0,gameFrames:0,controlCalls:0};
+    let overflow=false,currentRaf=null,currentFrame=null,starting=0,lastPauseRequested=null,hookedCore=null,frameHook=null;
+    const keep=(list,item,max)=>{if(list.length>=max){overflow=true;return null;}list.push(item);return item;};
+    const problem=(target,reason)=>keep(hookErrors,{target,reason},limits.hookErrors);
+    const callbackInfo=callback=>{
+     let info=known.get(callback);
+     if(!info){let name='';try{name=String(callback.name||'').slice(0,120);}catch{}
+      info={id:callbacks.length,name,game:!!starting};known.set(callback,info);
+      if(!keep(callbacks,info,limits.callbacks))info.id=null;
+     }else if(starting)info.game=true;
+     return info;
+    };
+    const rafHook=callback=>{
+     const requestedAt=performance.now(),info=callbackInfo(callback);
+     ++counts.requested;
+     const row=keep(requests,{index:requests.length,nativeId:null,parentIndex:currentRaf?.index??null,
+      callbackId:info.id,requestedAt,enteredAt:null,exitedAt:null,rafTimestamp:null,cancelledAt:null,
+      frameCalls:0,firstFrameIndex:null,lastFrameIndex:null,frameHookAtEntry:null,frameHookAtExit:null,
+      pauseAtEntry:null,pauseAtExit:null,requestThrew:false,callbackThrew:false},limits.requests);
+     let nativeId;
+     try{nativeId=raf(timestamp=>{
+      const enteredAt=performance.now(),previous=currentRaf,previousTimestamp=window.currentGameRafTimestamp;
+      ++counts.entered;pending.delete(nativeId);currentRaf=row;window.currentGameRafTimestamp=timestamp;
+      if(row){row.enteredAt=enteredAt;row.rafTimestamp=timestamp;row.pauseAtEntry=lastPauseRequested;
+       row.frameHookAtEntry=hookedCore?hookedCore.onGameFrame===frameHook:null;}
+      try{return callback(timestamp);}catch(error){if(row)row.callbackThrew=true;throw error;}
+      finally{
+       const exitedAt=performance.now();++counts.exited;
+       if(row){row.exitedAt=exitedAt;row.pauseAtExit=lastPauseRequested;
+        row.frameHookAtExit=hookedCore?hookedCore.onGameFrame===frameHook:null;}
+       currentRaf=previous;window.currentGameRafTimestamp=previousTimestamp;
+      }
+     });}catch(error){if(row)row.requestThrew=true;throw error;}
+     if(row){row.nativeId=nativeId;pending.set(nativeId,row);}
+     return nativeId;
+    };
+    const cancel=window.cancelAnimationFrame.bind(window);
+    const cancelHook=id=>{
+     const row=pending.get(id);++counts.cancelled;
+     const result=cancel(id);
+     if(row){row.cancelledAt=performance.now();pending.delete(id);}return result;
+    };
+    window.requestAnimationFrame=rafHook;window.cancelAnimationFrame=cancelHook;
+    const replace=(object,key,factory)=>{
+     const descriptor=Object.getOwnPropertyDescriptor(object,key);
+     if(!descriptor||!('value' in descriptor)||!descriptor.writable||typeof descriptor.value!=='function'){
+      problem(key,'Expected an own writable function; hook skipped');return null;
+     }
+     const wrapped=factory(descriptor.value);object[key]=wrapped;return wrapped;
+    };
+    window.rafDiagnosticProbe={
+     attach(core,play,m){
+      if(hookedCore){problem('attach','Already attached');return;}hookedCore=core;
+      const originalPlayFrame=play.frame;
+      if(typeof originalPlayFrame==='function'&&Object.isExtensible(play)){
+       play.frame=function(...args){
+        const frame=currentFrame;if(frame)frame.playEnteredAt=performance.now();
+        try{return Reflect.apply(originalPlayFrame,this,args);}
+        finally{if(frame)frame.playExitedAt=performance.now();}
+       };
+      }else problem('play.frame','Hook skipped');
+      frameHook=replace(core,'onGameFrame',original=>function(...args){
+       const enteredAt=performance.now(),previous=currentFrame;++counts.gameFrames;
+       const frame=keep(frames,{index:frames.length,rafIndex:currentRaf?.index??null,enteredAt,exitedAt:null,
+        cppWorkMs:args[1],ok:args[0],playEnteredAt:null,playExitedAt:null,sampleAt:null,afterSampleAt:null,
+        sampleBefore:m.samples.length,sampleAfter:null,activeBefore:play.active,activeAfter:null,
+        endedBefore:!!m.ended,endedAfter:null,threw:false},limits.frames);
+       currentFrame=frame;
+       if(currentRaf){++currentRaf.frameCalls;
+        if(frame){currentRaf.firstFrameIndex??=frame.index;currentRaf.lastFrameIndex=frame.index;}
+        const info=callbacks[currentRaf.callbackId];if(info)info.game=true;}
+       try{return Reflect.apply(original,this,args);}catch(error){if(frame)frame.threw=true;throw error;}
+       finally{
+        if(frame){frame.exitedAt=performance.now();frame.sampleAfter=m.samples.length;
+         frame.activeAfter=play.active;frame.endedAfter=!!m.ended;}currentFrame=previous;
+       }
+      });
+      for(const name of ['_th09_loop_start','_th09_loop_pause','_th09_loop_stop']){
+       replace(core,name,original=>function(...args){
+        const enteredAt=performance.now();++counts.controlCalls;
+        const row=keep(controls,{name,enteredAt,exitedAt:null,argument:typeof args[0]==='number'?args[0]:null,
+         rafIndex:currentRaf?.index??null,active:play.active,finished:play.finished,connected:play.connected,
+         recovering:!!play.recovering,visibility:document.visibilityState,threw:false},limits.controls);
+        if(name==='_th09_loop_start')++starting;
+        if(name==='_th09_loop_pause')lastPauseRequested=typeof args[0]==='number'?args[0]:null;
+        try{return Reflect.apply(original,this,args);}catch(error){if(row)row.threw=true;throw error;}
+        finally{if(row)row.exitedAt=performance.now();if(name==='_th09_loop_start')--starting;}
+       });
+      }
+     },
+     onSample(sample,started){
+      if(currentFrame){currentFrame.sampleAt=started+sample[0];currentFrame.afterSampleAt=performance.now();}
+     },
+     snapshot(){
+      return {version:1,clock:'Page performance.now(); rafTimestamp is the browser supplied frame timestamp, not entry time.',
+       scope:'Existing RAF dispatch and JS/WASM callback boundaries; not physical scanout. pause fields record requested state, not a native state read.',
+       snapshotAt:performance.now(),limits,overflow,valid:!overflow&&!hookErrors.length&&window.requestAnimationFrame===rafHook&&window.cancelAnimationFrame===cancelHook&&(!hookedCore||hookedCore.onGameFrame===frameHook),counts,
+       rafHookCurrent:window.requestAnimationFrame===rafHook,cancelHookCurrent:window.cancelAnimationFrame===cancelHook,
+       frameHookCurrent:hookedCore?hookedCore.onGameFrame===frameHook:null,lastPauseRequested,
+       pendingIndices:Array.from(pending.values(),row=>row.index),callbacks,requests,frames,controls,hookErrors};
+     }
+    };
+   }
+   const stats=window.impairment={matched:0,sent:0,dropped:0,pending:0,peakPending:0,burstPackets:0,bursts:[],planned:[],delivered:[],lanes:{}};
    let seed=0x915ab+side;
    const prototype=fallback?WebSocket.prototype:RTCDataChannel.prototype,send=prototype.send;
    prototype.send=function(bytes){
@@ -62,19 +194,30 @@ try {
     }
     if(data[0]!==69||data[5]!==1)return send.call(this,bytes);
     window.observeLocalInput?.(data);
+    if(networkTrace)window.networkTransportProbe.onSendIntent(packet,this);
     const lane=fallback?'relay':this.label,n=++stats.matched;stats.lanes[lane]=(stats.lanes[lane]||0)+1;
     if(lane.includes('input')&&dropEvery&&n%dropEvery===0){++stats.dropped;return;}
     seed=(Math.imul(seed,1664525)+1013904223)>>>0;
-    const planned=Math.max(0,delay+(seed/0x100000000*2-1)*jitter),began=performance.now(),copy=packet.slice();
+    const began=performance.now(),age=window.measure?.started?began-window.measure.started:-1;
+    const burst=burstFor>0&&age>=burstAt&&age<burstAt+burstFor;
+    if(burst){++stats.burstPackets;stats.bursts.push([age,window.readStats?.()[0]??null,!!window.measure?.ended,lane]);}
+    const planned=Math.max(0,delay+(seed/0x100000000*2-1)*jitter)+(burst?burstDelay:0),copy=packet.slice();
     stats.planned.push(planned);++stats.pending;stats.peakPending=Math.max(stats.peakPending,stats.pending);
     if(stats.pending>1024||stats.planned.length>200000)throw Error('impairment sample/queue overflow');
     setTimeout(()=>{--stats.pending;if(this.readyState==='open'||this.readyState===WebSocket.OPEN){send.call(this,copy);++stats.sent;stats.delivered.push(performance.now()-began);}},planned);
    };
-  },{delay,jitter,dropEvery,side,fallback});
+   if(networkTrace)window.networkTransportProbe.expectSendWrapper(WebSocket.prototype.send);
+  };
+  const hookOptions={delay,jitter,dropEvery,side,fallback,burstAt,burstFor,burstDelay,rafDiagnostics,networkTrace};
+  // A single init script makes the native WS observer the send captured by impairment.
+  if(networkTrace)await page.addInitScript({content:'('+installNetworkTransportProbe.toString()+')('+JSON.stringify({enabled:true,side})+');\n('+installSmoothnessHooks.toString()+')('+JSON.stringify(hookOptions)+');'});
+  else await page.addInitScript(installSmoothnessHooks,hookOptions);
   await page.goto(host.url);await page.evaluate(()=>openProbe(0,1,2,3,true));
   const cdp=await page.context().newCDPSession(page);sessions.push(cdp);
   if(side===1&&slow>1)await cdp.send('Emulation.setCPUThrottlingRate',{rate:slow});
+  hostProbe?.mark(`browser-${side+1}-setup-complete`);
  }
+ hostProbe?.mark('netplay-setup-start');
  await pages[0].evaluate(async ({port,members})=>{
   const wait=async test=>{const start=performance.now();while(!test()){const closed=window.lobbies?.find(ws=>ws.readyState===WebSocket.CLOSED);if(closed)throw Error('lobby closed '+JSON.stringify(closed.failure));if(performance.now()-start>10000)throw Error('lobby timeout');await new Promise(r=>setTimeout(r,10));}};
   window.lobbies=[];
@@ -84,18 +227,19 @@ try {
   for(const ws of lobbies)ws.send(JSON.stringify({type:'set-ready',ready:true}));await wait(()=>lobbies[0].latest.room?.seats.slice(0,2).every(s=>s?.ready));
   lobbies[0].send(JSON.stringify({type:'start'}));await wait(()=>lobbies[0].latest.type==='start');
  },{port,members});
- for(let side=0;side<2;++side)await pages[side].evaluate(async ({side,port,limit,inputMode,member})=>{
+ for(let side=0;side<2;++side)await pages[side].evaluate(async ({side,port,limit,inputMode,member,responsiveness,rafDiagnostics,networkTrace})=>{
   const {SharedNetplay}=await import('/app/shared-netplay.mjs');
   const options={netplayUrl:`ws://127.0.0.1:${port}/?room=th09mp-0998&run=1&players=2&player=${side}&member=${member}`,netplayPlayer:side,netplayPlayerCount:2,netplaySeed:12345,netplayDifficulty:3,netplayLoadouts:[{character:0},{character:1}],netplayIceServers:[],netplaySpectatorCount:0};
-  const m=window.measure={samples:[],loads:[],notices:[],closed:[],inputTape:[],started:0,ended:0,limit,audioStart:0,finished:false};
-  core.eaglerOptions=options;window.play=new SharedNetplay(core,{onStatus:s=>m.notices.push(s),onClose:s=>m.closed.push(s),onResult:()=>{m.finished=true;}});
+  const m=window.measure={samples:[],frameDetails:[],networkPacing:[],loads:[],notices:[],closed:[],inputTape:[],started:0,ended:0,limit,audioStart:0,finished:false};
+  core.eaglerOptions=options;window.play=new SharedNetplay(core,{onStatus:s=>m.notices.push(s),onClose:s=>{m.closed.push(s);window.responsivenessProbe?.stop();},onResult:()=>{m.finished=true;window.responsivenessProbe?.stop();}});
   window.readStats=()=>Array.from(core.HEAPU32.subarray(core._th09_rollback_info()/4,core._th09_rollback_info()/4+8));
   const updateInput=now=>{
-   if(inputMode==='tape')return;
+   if(inputMode==='tape'||responsiveness)return;
    const age=now-m.started,cycle=Math.floor(age/360)+side;
    // Physical intent continues while simulation is late; no frame-driven drag.
    for(const [scan,down] of [[29,age<2200],[44,age%2100<1500],[42,age%3000<750],[203,cycle%4===0],[205,cycle%4===2]])core._th09_key(scan,+down);
   };
+  if(responsiveness)window.observeLocalInput=data=>window.responsivenessProbe.onLocalInput(data);
   if(inputMode==='tape'){
    // Keep the production keyboard sampler and protocol untouched. A new local
    // packet is sent synchronously by LocalCaptured, so set the NEXT frame's
@@ -121,18 +265,33 @@ try {
   core.onGameFrame=(ok,ms)=>{
    window.audioOutputProbe?.observe(core.SDL3,play.active&&!m.ended);
    play.frame();if(!play.active||m.ended)return;const now=performance.now();
-   if(!m.started){m.started=now;m.audioStart=core.SDL3?.audioContext?.currentTime||0;}
+   if(!m.started){m.started=now;m.audioStart=core.SDL3?.audioContext?.currentTime||0;if(responsiveness)window.responsivenessProbe.start(core,side);}
    updateInput(now);const s=readStats(),at=core._th09_game_metrics()/4,n=core.HEAPU32[at+9],phase=sessionStatus()[0];
+   if(responsiveness)window.responsivenessProbe.onFrame(s,n,phase,now);
    if(s[0]>=180&&!m.sdlStart){const p=core._sdl_stats()/4;m.sdlStart=Array.from(core.HEAPU32.subarray(p,p+17));}
    if(!Number.isFinite(window.currentGameRafTimestamp))throw Error('Game callback outside measured requestAnimationFrame');
    m.samples.push([now-m.started,ok,ms,...s,n,phase,window.currentGameRafTimestamp]);
+   if(rafDiagnostics){
+    if(core._th09_network_pacing_info){const at=core._th09_network_pacing_info()/4;
+     m.networkPacing.push([m.samples.length-1,...core.HEAPU32.subarray(at,at+6)]);}
+    window.rafDiagnosticProbe.onSample(m.samples.at(-1),m.started);
+   }
+   const adonis=core._th09_adonis_info()/4;
+   const tickCost=core._th09_probe_tick_cost?.();
+   // These are WorldState saves, unlike samples[7] (local input captures).
+   // Development tick costs describe the LAST tick, not a callback total.
+   m.frameDetails.push([s[0],core.HEAPU32[adonis+2],...(tickCost?new Float64Array(core.HEAPU8.buffer,tickCost,2):[])]);
    if(core._th09_probe_load&&m.samples.length%30===0){const at=core._th09_probe_load()/4;m.loads.push([s[0],...core.HEAPU32.subarray(at,at+20)]);}
    if(m.samples.length>50000)throw Error('performance sample overflow');
-   if(s[0]>=limit&&s[1]>=limit)m.ended=now;
+   if(s[0]>=limit&&s[1]>=limit){m.ended=now;window.responsivenessProbe?.stop(now);}
+   if(networkTrace)window.networkTransportProbe.observePacing(core,'frame',m.samples.length-1);
   };
+  if(networkTrace)window.networkTransportProbe.attachCore(core);
+  if(rafDiagnostics)window.rafDiagnosticProbe.attach(core,play,m);
   core._th09_probe_frame_limit?.(limit);core._th09_loop_start();core._th09_loop_pause(1);await play.connect(options);
- },{side,port,limit,inputMode,member:members[side]});
+ },{side,port,limit,inputMode,member:members[side],responsiveness,rafDiagnostics,networkTrace});
  if(profile)for(const cdp of sessions){await cdp.send('Profiler.enable');await cdp.send('Profiler.setSamplingInterval',{interval:500});await cdp.send('Profiler.start');}
+ hostProbe?.mark('formal-poll-start');
  const began=Date.now(),timeout=limit/60*1000*3+20000;
  let status;
  while(Date.now()-began<timeout){
@@ -143,6 +302,7 @@ try {
   await new Promise(r=>setTimeout(r,100));
  }
  assert.ok(status.every(s=>s.ended),'incomplete workload '+JSON.stringify(status));
+ hostProbe?.mark('formal-poll-complete');
  if(profile)for(let side=0;side<2;++side){const result=await sessions[side].send('Profiler.stop');writeFileSync(resolve(out,`${label}-P${side+1}.cpuprofile`),JSON.stringify(result.profile));}
  const results=await Promise.all(pages.map(p=>p.evaluate(release=>{
   core._th09_loop_pause(1);const gl=document.querySelector('canvas').getContext('webgl2'),ext=gl.getExtension('WEBGL_debug_renderer_info');
@@ -150,10 +310,11 @@ try {
   const audio={state:core.SDL3?.audioContext?.state,advancedSeconds:(core.SDL3?.audioContext?.currentTime||0)-measure.audioStart};
   const audited=release?null:Array.from(core.HEAP32.subarray(core._th09_probe_world()/4,core._th09_probe_world()/4+48));
   const sdlAt=core._sdl_stats()/4,sdl=Array.from(core.HEAPU32.subarray(sdlAt,sdlAt+17));
+  window.networkTransportProbe?.stop('complete');
   return {stats:readStats(),hash:core._th09_network_hash()>>>0,audited,route:window.__eaglerNetplayTransport,renderer,audio,measure,impairment,memoryBytes:core.HEAPU8.length,
-   audioOutput:window.audioOutputProbe?.snapshot(),sdl,confirmedHashes:window.confirmedHashTrace||[]};
+   audioOutput:window.audioOutputProbe?.snapshot(),responsiveness:window.responsivenessProbe?.snapshot(),rafDiagnostics:window.rafDiagnosticProbe?.snapshot(),networkTransport:window.networkTransportProbe?.snapshot(),lifecycle:window.gameLifecycle,sdl,confirmedHashes:window.confirmedHashTrace||[]};
  },release)));
- retainedResults=results;
+ retainedResults=results;hostProbe?.mark('browser-sample-capture-complete');
  assert.equal(errors.length,0);assert.ok(results.every(r=>r.route===(fallback?'relay':'rtc')));
  for(const r of results){assert.doesNotMatch(r.renderer,/swiftshader|llvmpipe|microsoft basic render/i);assert.ok(r.impairment.matched>100&&r.impairment.sent>100,'Input impairment not exercised on requested route');assert.ok(r.audio.advancedSeconds>1);}
  const sameFrame=results[0].stats[0]===results[1].stats[0];
@@ -168,24 +329,32 @@ try {
  }
  assert.deepEqual(results[0].confirmedHashes.slice(0,confirmedChecks),results[1].confirmedHashes.slice(0,confirmedChecks),'Confirmed hash trace diverged');
  if(audioOutput)for(const r of results){assert.ok(r.audioOutput?.blocks.length>100&&r.audioOutput.nonzeroBlocks>100,'Actual audio output not exercised');assert.ok(!r.audioOutput.overflow);}
+ if(responsiveness)for(const r of results){assert.ok(r.responsiveness?.valid,JSON.stringify(r.responsiveness?.errors));assert.ok(r.responsiveness.counts.planned>10&&r.responsiveness.counts.captured>10,'Independent input response was not exercised');}
+ if(rafDiagnostics)for(const r of results){assert.ok(r.rafDiagnostics?.valid,JSON.stringify(r.rafDiagnostics?.hookErrors));assert.ok(r.rafDiagnostics.counts.gameFrames>100&&r.rafDiagnostics.callbacks.some(c=>c.game),'Game RAF diagnostics were not exercised');}
+ if(networkTrace)for(const r of results){assert.ok(r.networkTransport?.valid,JSON.stringify({errors:r.networkTransport?.errors,overflow:r.networkTransport?.overflow,identity:r.networkTransport?.identity}));assert.ok(r.networkTransport.coverage.exercised,'Network transport diagnostics were not exercised');}
+ if(burstFor&&burstDelay)for(const r of results)assert.ok(r.impairment.bursts.some(b=>b[1]>=180&&b[1]<limit&&!b[2]),'Network burst did not overlap the measured workload');
  if(inputMode==='tape')for(const r of results){assert.ok(r.measure.inputTape.length>=limit);r.inputTapeSha256=createHash('sha256').update(JSON.stringify(r.measure.inputTape.slice(0,limit))).digest('hex');}
  if(!release)assert.ok(finalComparable,'Diagnostic frame limit did not reach a fully confirmed common endpoint');
  if(finalComparable){assert.equal(results[0].hash,results[1].hash);if(!release)assert.deepEqual(results[0].audited,results[1].audited);}
  const summary=results.map(r=>{
-  const samples=r.measure.samples.filter(s=>s[3]>=180&&s[3]<limit),gaps=[],completionGaps=[],rafGaps=[];let prior;
+  const samples=r.measure.samples.filter(s=>s[3]>=180&&s[3]<limit),gaps=[],completionGaps=[],rafGaps=[],effectiveGaps=[];let prior,effectivePrior;
   for(let i=1;i<samples.length;++i)if(samples[i][13]!==samples[i-1][13])rafGaps.push(samples[i][13]-samples[i-1][13]);
   for(const s of samples)if(!prior||s[11]!==prior[11]){if(prior){gaps.push(s[13]-prior[13]);completionGaps.push(s[0]-prior[0]);}prior=s;}
+  for(const s of samples)if((!effectivePrior||s[11]!==effectivePrior[11])&&(!effectivePrior||s[3]>effectivePrior[3])){if(effectivePrior)effectiveGaps.push(s[13]-effectivePrior[13]);effectivePrior=s;}
   const first=samples[0],last=samples.at(-1),elapsed=last[0]-first[0];
   const fields=['calls','batches','uploadBytes','readBytes','frames','presentations','bufferReplacements','bufferSubUpdates','vertexUploadBytes','directBytes','copiedBytes','layoutSetups','textureBinds','framebufferBinds','programCompiles','genericBatches','resamples'];
   r.sdlMeasured=Object.fromEntries(fields.map((name,i)=>[name,r.sdl[i]-r.measure.sdlStart[i]]));
-  return {logicHz:(last[3]-first[3])*1000/elapsed,elapsedMs:elapsed,firstFrame:first[3],lastFrame:last[3],callbacks:samples.length,waitCallbacks:samples.filter(s=>s[1]===2).length,corrections:last[5]-first[5],resimulated:last[6]-first[6],captures:last[7]-first[7],callbackWorkMs:distribution(samples.map(s=>s[2])),presentationGapMs:distribution(gaps),callbackCompletionGapMs:distribution(completionGaps),rafGapMs:distribution(rafGaps),plannedDelayMs:distribution(r.impairment.planned),deliveredDelayMs:distribution(r.impairment.delivered),scenes:[...new Set(samples.map(s=>s[12]))]};
+  return {logicHz:(last[3]-first[3])*1000/elapsed,elapsedMs:elapsed,firstFrame:first[3],lastFrame:last[3],callbacks:samples.length,waitCallbacks:samples.filter(s=>s[1]===2).length,corrections:last[5]-first[5],resimulated:last[6]-first[6],captures:last[7]-first[7],callbackWorkMs:distribution(samples.map(s=>s[2])),presentationGapMs:distribution(gaps),effectivePresentationGapMs:distribution(effectiveGaps),callbackCompletionGapMs:distribution(completionGaps),rafGapMs:distribution(rafGaps),plannedDelayMs:distribution(r.impairment.planned),deliveredDelayMs:distribution(r.impairment.delivered),scenes:[...new Set(samples.map(s=>s[12]))]};
  });
  assert.equal(sha(wasmPath),identity.wasm,'WASM changed during run');assert.equal(sha(relayPath),identity.relay);
- const report={passed:true,scope:'Two separate desktop Chromium processes; native GPU; real '+(fallback?'WebSocket relay':'RTC')+' with seeded application-send impairment on input and repair lanes; '+(inputMode==='tape'?'wire-verified frame-indexed hosted-key tape':'wall-clock synthetic keyboard')+(audioOutput?'; sampled SDL output blocks, not speaker/acoustic acceptance':'; audio clock only, not acoustic acceptance'),presentationMeasurement:'RAF timestamps of callbacks with a new renderer submission; NOT physical scanout. Completion gaps are reported separately because varying callback work is not itself a missed vsync.',identity,parameters,browsers:browsers.map(b=>b.version()),sameFrame,finalComparable,confirmedChecks,summary,results,errors,relayLog};
+ hostProbe?.mark('success-report-ready');const hostLoadSnapshot=await hostProbe?.stop();
+ const report={passed:true,scope:'Two separate desktop Chromium processes; native GPU; real '+(fallback?'WebSocket relay':'RTC')+' with seeded application-send impairment on input and repair lanes; '+(inputMode==='tape'?'wire-verified frame-indexed hosted-key tape':'wall-clock synthetic keyboard')+(audioOutput?'; sampled SDL output blocks, not speaker/acoustic acceptance':'; audio clock only, not acoustic acceptance'),presentationMeasurement:'RAF timestamps of callbacks with a new renderer submission; NOT physical scanout. Completion gaps are reported separately because varying callback work is not itself a missed vsync.',identity,parameters,browsers:browsers.map(b=>b.version()),sameFrame,finalComparable,confirmedChecks,summary,results,errors,relayLog,hostLoad:hostLoadSnapshot};
  writeFileSync(resolve(out,label+'-report.json'),JSON.stringify(report,null,2));console.log(JSON.stringify({identity,parameters,sameFrame,summary,hashes:results.map(r=>r.hash)}));
 }catch(error){
- const partial=await Promise.all(pages.map(async p=>{try{return await p.evaluate(()=>({measure:window.measure,impairment:window.impairment,stats:window.readStats?.(),audioOutput:window.audioOutputProbe?.snapshot(),confirmedHashes:window.confirmedHashTrace}));}catch{return null;}}));
- writeFileSync(resolve(out,label+'-failure.json'),JSON.stringify({error:error.stack,identity,parameters,partial,results:retainedResults,errors,relayLog},null,2));throw error;
+ hostProbe?.mark('failure-observed');const hostLoadSnapshot=await hostProbe?.stop();
+ const partial=await Promise.all(pages.map(async p=>{try{return await p.evaluate(()=>{window.responsivenessProbe?.stop();window.networkTransportProbe?.stop('failure');return {measure:window.measure,impairment:window.impairment,stats:window.readStats?.(),audioOutput:window.audioOutputProbe?.snapshot(),responsiveness:window.responsivenessProbe?.snapshot(),rafDiagnostics:window.rafDiagnosticProbe?.snapshot(),networkTransport:window.networkTransportProbe?.snapshot(),lifecycle:window.gameLifecycle,confirmedHashes:window.confirmedHashTrace};});}catch{return null;}}));
+ writeFileSync(resolve(out,label+'-failure.json'),JSON.stringify({error:error.stack,identity,parameters,partial,results:retainedResults,errors,relayLog,hostLoad:hostLoadSnapshot},null,2));throw error;
 }finally{
+ await hostProbe?.stop();
  for(const browser of browsers)await browser.close();if(host){host.netplay.close();await new Promise(r=>host.server.close(r));}relay.kill();
 }

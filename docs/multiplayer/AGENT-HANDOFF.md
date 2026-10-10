@@ -1,5 +1,31 @@
 # TH09 rollback handoff for a new agent
 
+> **2026-10-10 responsiveness continuation override (newest):** Work remains in
+> `D:/workspace/eagler/worktrees/th09-rollback-4x`, branch `experiment/rollback-4x`.
+> Implementation commit `0365fb286d872f41e8bf692bbb5b09d8b94d4bf6` adds earlier
+> once-only D=0 capture, a shared recovery budget, reusable text-resample storage,
+> actual-input-gap pacing, and complete-VM first-write pages. Read
+> [rollback-responsive-work.md](rollback-responsive-work.md),
+> [rollback-responsive-evidence.json](rollback-responsive-evidence.json), and
+> [rollback-network-trace-plan.md](rollback-network-trace-plan.md) first.
+> The current experimental P release is frozen at
+> `th09_web/artifacts/rollback4x-responsive-vm-final-release`, WASM SHA-256
+> `de1760ac76f3aaa8cd49c9f267f37f85e86c70d6bf251679a5c93fefacca9b68`.
+> Deep-8 state/Replay and 7,200-frame release-render gates pass; **4x smoothness
+> and overall performance gains remain unaccepted/unconfirmed**. Actual compiler
+> contention and a same-binary page bias were observed. Activated M/M controls
+> reduce the old page asymmetry; activated M/P costs still show no aggregate win.
+> Do not discard unfavorable runs or blame all differences on the host.
+> New M/P packet traces retain 0.3-0.6 s startup stalls; their formal 180..1799
+> windows did not reproduce the older seconds-long stalls. No relay-side packet
+> trace exists. Missing input can originate from a slow peer as well as transport;
+> input-gap pacing is not proof that CPU-induced slowdown has been eliminated.
+> Next priority is live ordinary Draw/submit/audio and first-frame preparation,
+> while preserving exact game state, confirmed audio, D=0 and new-frame cadence.
+> All environment work must use **nig**. Shared common stays at canonical
+> `43add4dc9085c65468f7ab15428c00206cbe3834`; preserve the unrelated dirty common
+> prototype. No push/deployment was performed. All overrides below are historical.
+
 > **2026-10-10 experiment/rollback-4x override:** Current work is isolated in
 > `D:/workspace/eagler/worktrees/th09-rollback-4x`, based on authored `6ce1c46`.
 > Read [rollback-4x-performance.md](rollback-4x-performance.md) and
