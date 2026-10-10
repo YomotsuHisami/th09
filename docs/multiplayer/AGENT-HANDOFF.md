@@ -1,5 +1,87 @@
 # TH09 rollback handoff for a new agent
 
+> **2026-10-10 scheduler and relay125 continuation (current):** Continue in
+> `D:/workspace/eagler/worktrees/th09-rollback-4x`, branch `experiment/rollback-4x`.
+> Read [rollback-chain-work.md](rollback-chain-work.md), the Chrome scheduler,
+> relay125 response/transport, and network-pacing contract evidence beside it.
+> Current code includes `fd64e7` bounded tracing and `3e3df073daf07787c1dcb71aadf015fffd3246b8`
+> for the two measured local-budget constants; helper SHA `e15457ff9a36e15a49cbdfb7fdb762bbc4da819087991234c95040517a03db58`.
+> Keep B scalar Wasm `47367732b9bc4972d8adf2ffc49ace32cf9eca4a3868ff73c9c6494a0de4df97`
+> as the default candidate, with isolated common `512353cab9eaa4f6744f867b0eb07c61ee7f2b0e`.
+> SIMD remains OFF; no stable code speedup has been established by ABCA.
+> Scheduler-01 failed trace completion; short-02 failed audio sampling and local
+> trace capacity. Short-03 (360 frames, output-block sampling OFF but runtime
+> audio ON) passed both trace collection/clock/active coverage, zero overflow.
+> All three raw cases and failures are preserved. Stop this capture calibration:
+> the valid short window did not reproduce the old seconds-long active stall.
+> Relay125-01 is completed: D0, 1800 wall-clock-input frames, CPU[1,4], each
+> direction planned 125+/-5 ms, scalar release, no Chrome trace. Fifteen confirmed
+> hash checks pass. Continuous 180-to-1800 boundaries report 40.608/40.616 Hz,
+> new-state maxima 41.135/44.695 ms; P2 corrections 299/resim 1740 (endpoint deltas).
+> P2 legacy 83.735 ms RAF and 99.180 ms Present gaps are non-adjacent filter artifacts:
+> next/cursor rewound into frame 1799 after ten excluded 1800..1802 samples.
+> Preserve old summary; use fixed first-cross continuous windows and retain
+> startup, terminal crossing and tail. Captures is not simulation completion.
+> Formal intent cohorts are 161 each: P1 all captured/presented, P2 160/161.
+> P2 id40 was the held combination Z+Shift+Left for only 4.840 ms, then Z+Left;
+> Left DOWN was captured subsequently, but the intermediate full mask was not.
+> Do not delete it, call it zero latency, or add a mask-history queue without
+> checking the game's actual held/pressed/released contract.
+> Overall smoothness is NOT accepted: the earlier relay39 active 1.4 s RAF wait
+> remains unresolved while its independent relay continued forwarding.
+> Next work targets anomaly-triggered bounded capture, actual deeper recovery
+> cost versus TH07, and relay/direct startup/repair/network conditions. Actual
+> local host/host UDP direct was verified; public NAT/TURN remains uncovered.
+> All planned browser commands are finished; root serializes any new heavy work.
+> All environment operations remain nig-only. Local commits only, no push/deploy.
+> Do not touch canonical repos or the unrelated dirty common prototype. Earlier
+> snapshots below are historical and retain their original measurements.
+
+> **2026-10-10 transport and ordinary-frame continuation (preceding snapshot):** Continue
+> in `D:/workspace/eagler/worktrees/th09-rollback-4x`. Read
+> [rollback-chain-work.md](rollback-chain-work.md) before historical overrides.
+> Local TH09 commit `17077dd` combines an already-due Pump input send with the
+> immediately following once-only frontier capture, and flushes before Restore
+> or yielding. The new common pin is
+> `512353cab9eaa4f6744f867b0eb07c61ee7f2b0e`, isolated at
+> `D:/workspace/eagler/worktrees/th09-rollback-input-batch-common` on branch
+> `experiment/th09-input-batch`. Common channel and TH09 session/Adonis component
+> gates pass. A real 900-frame relay trace verifies P2 old-tail/fresh duplicate
+> sends 519 to 0 and P1 321 to 1, with all wire tapes and confirmed hashes equal.
+> The remaining P1 pair is consistent with the preserved due-repair guard.
+> Audio SIMD is default-off and confined to AudioDevice.cpp, saved in local
+> commit `6a486298a731d4aff8ec8d2b19df605a98abf48e`. Both WASI and actual
+> Emscripten gates pass all 84 bit-exact cases; the actual toolchain warm-mix
+> total was 8.45% slower. Combined deep-8 recovery and 7200-frame production
+> render equivalence pass. Do not substitute these gates for performance.
+> Frozen headed release A/B/C/A at CPU4 now reports P2 59.987 / 60.009 /
+> 58.253 / 59.921 Hz and maximum new-state gaps 24.365 / 30.770 / 31.405 /
+> 30.545 ms. A is unchanged P, B adds input batching, C also enables SIMD.
+> This establishes that the tested headed release can approach 60 Hz; it does
+> not establish a code speedup or resolve old rAF starvation. Preserve compiler
+> activity, overlapping window bounds, CIM startup observation, and all failures.
+> The 1800-frame B relay39 run passed state but FAILED the smoothness goal:
+> both active rAF requests waited about 1.4s while independent relay kept
+> receiving/scheduling/sending, with window schedule-to-send maxima about 55ms.
+> Burst response (500ms at +120ms on top of 39+/-5ms) ran about 58.425Hz,
+> new-state max91.840ms; preserve the warmup intent superseded after only 1.635ms.
+> Actual 900-frame headed direct passed: selected host/host UDP succeeded,
+> P2 59.981Hz and new-state max24.265ms. This is not public NAT/TURN coverage.
+> Headed/startup controls are now local commit
+> `83c447177b6da7f77429e35c97e2f35ec65f0245`; startup seven contracts pass.
+> Harness `a0ce03e2e79efaeab2f605c2e14f94415bce543cfdcb57d0e83eee4be4f34fef`
+> stayed byte-identical through ABCA, relay39, burst and direct. Next is one
+> bounded Chrome scheduler/compositor/GPU trace for active rAF starvation,
+> not a gameplay scheduling change. Root serializes all heavy work.
+> All frozen P/live baseline comparisons still use common `43add4d` at
+> `D:/workspace/eagler/worktrees/th09-rollback-transport-common`. Do not use the
+> unrelated dirty `th09-rollback-4x-common` prototype. Preserve every failed run.
+> RTC constructor waits occur even without a game (about 1.32s); live reached
+> about 4.7s before relay fallback. An active release rAF remained pending for
+> at least 15.6s while audio callbacks continued; compiler activity was present.
+> Neither is proven to be rollback CPU cost or a particular host service.
+> All environment work uses nig. Local commits only; no push or deployment.
+
 > **2026-10-10 responsiveness continuation override (newest):** Work remains in
 > `D:/workspace/eagler/worktrees/th09-rollback-4x`, branch `experiment/rollback-4x`.
 > Implementation commit `0365fb286d872f41e8bf692bbb5b09d8b94d4bf6` adds earlier
