@@ -5,7 +5,7 @@ import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 
 export const CHROME_SCHEDULER_TRACE_CATEGORIES=Object.freeze(['toplevel','renderer.scheduler','cc','viz','gpu','blink.user_timing']);
-export const CHROME_SCHEDULER_TRACE_LIMITS=Object.freeze({events:250000,sanitizedBytes:64*1024*1024,bufferUsage:128,marks:8,errors:32,
+export const CHROME_SCHEDULER_TRACE_LIMITS=Object.freeze({events:350000,sanitizedBytes:96*1024*1024,bufferUsage:128,marks:8,errors:32,
   names:2048,threads:1024,durationMs:90000,commandTimeoutMs:5000,completionTimeoutMs:30000,pageTimeoutMs:5000});
 const STAGES=Object.freeze(['armed','first-active','capture-stop']);
 const MARKS=Object.freeze(Object.fromEntries(STAGES.map(x=>[x,'th09-sched-'+x])));
