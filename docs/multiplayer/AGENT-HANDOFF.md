@@ -1,6 +1,88 @@
 # TH09 rollback handoff for a new agent
 
-> **2026-10-11 enemy index, continuous windows and information-budget results (current):**
+> **2026-10-11 mobile movement rollback results (current):**
+> Continue performance work in D:/workspace/eagler/worktrees/th09-mobile-rollback-4x,
+> branch experiment/mobile-rollback-4x, from b243bb1. The sections below this
+> current block retain older history; do not resume edits in the frozen old tree.
+> Read [rollback-mobile-work.md](rollback-mobile-work.md), the corrected deep
+> evidence, release evidence, gap-dispatch evidence and managed-queue evidence.
+> User priorities: D0 prediction, continuous new states, CPU4 headroom, no
+> sudden freezes; information-limited smooth slowdown is acceptable. Include
+> continuous mobile movement, Launcher input delivery, independent relay and
+> actual direct routes. Preserve adverse runs and shared-host uncertainty.
+>
+> All environment work MUST use nig. Root owns the serialized execution slot
+> for builds, tests, browsers and raw-data aggregation. Agents only perform
+> scoped small reads or disjoint patches until root authorizes more.
+> Modern authored source only; no original executable/oracle or new downloads.
+> No push, merge or deploy. Local commits are authorized.
+>
+> Code commit a93fb876eb6be6c84c1cf2cf271153ee7fa4763e preserves held analog
+> target/vector prediction in mode0, keeps D0/H8 and full-field correction,
+> and adds focused C++ cases. Input capture remains once-only before restore.
+> The isolated common stays 512353cab9eaa4f6744f867b0eb07c61ee7f2b0e at
+> D:/workspace/eagler/worktrees/th09-rollback-input-batch-common.
+>
+> Matched release WASM 037c9cd52e70e2c8e8ee516cf15b6aee7f0de5951f88d519b2311cc1c5def373;
+> matched diagnostic f0fe104e03cf4c10617c16c8c08897784a83b02d5e8eeeabf8c2ee1e7e9e58cb.
+> Use artifacts/mobile-rollback-release-matched and mobile-rollback-live-matched.
+> 275 native build inputs: 274 exact matches, only RollbackSession.cpp differs.
+> Preserve initial EOL identity failure and exact LF header control. Header
+> bytes equal HEAD/index despite initial Git stat dirt; staging refreshed that
+> stat without changing its f64d10...54035 bytes. Audio SIMD remains OFF.
+>
+> Three-world direct B/C has identical actual 12B tape and Replay. Whole-run
+> corrections/resim decrease ~5%; 60 hold frames/side go from 60 to 20
+> restore-starts and 480 to 202 resim frame visits. The 216-frame main drag
+> stays at 216 restore-starts. Candidate manual wall time is WORSE and kept.
+> Manual three-world CPU4 timing is not real FPS or relay/direct evidence.
+> Source-derived cursor restore distance is not all remaining replay debt;
+> rechecking the same harness formula is not an independent restore hook.
+>
+> Six release runs passed. P2 closed-frontier Hz in relay B1/C1/C2/B2 order:
+> 34.422/59.109/59.552/59.740. New-state sampledAt max:
+> 175.270/117.005/67.325/78.980 ms. Actual tapes differ across ABBA, and B
+> self-drift prevents a causal whole-game speedup claim. Burst120:59.209Hz,
+> max86.270ms; direct120-c2:59.948Hz,max53.270ms. Direct selected ICE was
+> host/host UDP with open input/control lanes; not WAN/NAT/phone acceptance.
+> direct120-c1 was only a retained relay-trace-option preflight failure.
+>
+> All twelve maximum-gap request analyses qualify. P2 registered RAF wait
+> union B1/C1/C2/B2/burst/direct:108.665/104.720/55.800/67.165/65.115/42.145ms.
+> This uses max(requestedAt,parent.exitedAt) to enteredAt, clipped/unioned
+> in one Page clock. It does not identify OS/browser/GPU/other JS causality.
+> s[2] is whole C++ RAF callback wall time, not pure single-tick CPU. Repeated
+> zero-tick callbacks must not hide fresh-single-step or recovery cost.
+> stats[5] is Channel RepairsSent, NEVER a native wait counter. v1 deep
+> analyzer/evidence remain archived; corrected v2 preserved all quantities.
+>
+> Managed queue characterization ran six tests with real source listeners,
+> fake dependencies/clock and native call recording. Active resources blocked
+> five touch messages (native0 while keyboard3); release produced native7 and
+> cleared ACKs. Blur allowed two old direct calls after cancel; hidden allowed
+> controls/stick after cancel. Pre-ready input reached native after init before
+> launch. Four goals are FALSE; characterization PASS is not repair acceptance.
+> No actual movement, native capture, phone delay or game freeze measured there.
+>
+> NEXT: isolated managed touch fastpath candidate, with initialized/launch-
+> settled and current document owner checks. launched=true precedes awaited
+> netplay.connect, so it alone is insufficient. Do not require hasFocus:
+> ordinary Android host overlay can legitimately own touch. Preserve source
+> envelope gates, per-MOVE clamp ordering, ordinary controls and action serial
+> semantics; do not let cancel race older queued input. Local generation cannot
+> identify old parent messages not yet dispatched without protocol support.
+> Keep this experiment separate from the frozen performance artifacts.
+>
+> Continuous moving-target prediction still needs work. Start any extrapolation
+> idea as a causal-history-limited float-accurate shadow, not a promised reduction
+> in corrections/FPS. Begin/Delta migration has TH09 state/Replay/encoding
+> obligations. Existing information-pacing shadow remains OFFLINE/OFF.
+> An Android device was observed connected; real ordinary Launcher/device
+> acceptance has NOT run. Use existing legitimate session/package ownership,
+> never replace it with a bare native ABI run or fabricated provider.
+
+
+> **2026-10-11 enemy index, continuous windows and information-budget results (historical):**
 > Continue in `D:/workspace/eagler/worktrees/th09-rollback-4x`, branch
 > `experiment/rollback-4x`. Read the current top of
 > [rollback-chain-work.md](rollback-chain-work.md), then the enemy-index series,

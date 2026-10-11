@@ -61,6 +61,13 @@ assert.ok(!rafAnomaly||(release&&rafDiagnostics&&!schedulerTrace&&!profile&&!liv
 assert.ok(!networkTrace||fallback,'NETWORK_TRACE currently requires --relay');
 const responsiveness=process.env.RESPONSIVENESS==='1';
 assert.ok(!responsiveness||inputMode==='wall-clock','Responsiveness requires independent wall-clock input');
+const touchProfile=process.env.TOUCH_PROFILE||'off',touchInput=touchProfile!=='off';
+assert.ok(['off','direct','joystick'].includes(touchProfile),'TOUCH_PROFILE');
+assert.ok(!touchInput||inputMode==='wall-clock'&&!responsiveness,'Touch uses its own independent source/probe and excludes keyboard tape/RESPONSIVENESS');
+const touchSourceHz=integer('TOUCH_SOURCE_HZ',60,60,120);assert.ok([60,120].includes(touchSourceHz),'TOUCH_SOURCE_HZ is 60 or 120');
+const touchDurationMs=integer('TOUCH_DURATION_MS',120000,6000,120000);
+const touchModule=touchInput?await import('./touch-input-probe.mjs'):null;
+const touchSchedules=touchInput?[0,1].map(side=>touchModule.buildTouchInputSchedule({profile:touchProfile,sourceHz:touchSourceHz,durationMs:touchDurationMs,side})):null;
 const burstAt=integer('BURST_AT_MS',0,0,300000),burstFor=integer('BURST_FOR_MS',0,0,30000),burstDelay=integer('BURST_DELAY_MS',0,0,2000);
 if(impairmentSite==='none')assert.ok(delay===0&&jitter===0&&dropEvery===0&&burstFor===0&&burstDelay===0,'No injection requires explicit zero DELAY_MS/JITTER_MS/DROP_EVERY/BURST_FOR_MS/BURST_DELAY_MS');
 if(impairmentSite==='relay')assert.equal(dropEvery,0,'Relay DROP_EVERY semantics are not implemented; use a separately declared drop condition');
@@ -75,6 +82,7 @@ const relayPath=resolve(process.env.EAGLER_RELAY_SOURCE||'D:/workspace/eagler/ea
 identity.relay=sha(relayPath);identity.shell=sha(resolve(root,'sdl-runtime/shared-netplay.mjs'));identity.presentationHarness=sha(resolve(root,'tests/browser/presentation.html'));
 if(audioOutput)identity.audioProbe=sha(fileURLToPath(new URL('./audio-output-probe.mjs',import.meta.url)));
 if(responsiveness)identity.responsivenessProbe=sha(fileURLToPath(new URL('./responsiveness-probe.mjs',import.meta.url)));
+if(touchInput){identity.touchInputProbe=sha(fileURLToPath(new URL('./touch-input-probe.mjs',import.meta.url)));identity.touchInputSchedules=touchSchedules.map(p=>createHash('sha256').update(JSON.stringify(p)).digest('hex'));}
 if(hostLoad)identity.hostLoadProbe=sha(fileURLToPath(new URL('./host-load-probe.mjs',import.meta.url)));
 if(networkTrace)identity.networkTransportProbe=sha(fileURLToPath(new URL('./network-transport-probe.mjs',import.meta.url)));
 if(liveCost)identity.callbackCostProbe=sha(fileURLToPath(new URL('./callback-cost-probe.mjs',import.meta.url)));
@@ -97,6 +105,8 @@ const rafAnomalyNodePolls=rafAnomaly?{clock:'Node performance.now()',timeOrigin:
 const parameters={limit,delay,jitter,slow,dropEvery,release,profile,fallback,inputMode,audioOutput,responsiveness,burstAt,burstFor,burstDelay,rafDiagnostics,hostLoad,networkTrace,impairmentSite,relayDiagnostics,expectedRtcPath,liveCost,clientSendMode:impairmentSite==='client'?'timer':'synchronous',burstClock:impairmentSite==='relay'?'relay-first-nonempty-input-receive':'browser-active',cpuThrottle:{ratesBySide:[1,slow],configuredAfter:'openProbe',scope:'openProbe and after-open counters precede CPU throttling; subsequent netplay setup and first game callback use the configured per-side rates.'}};
 const distribution=values=>{const a=values.slice().sort((a,b)=>a-b);return {count:a.length,total:a.reduce((s,n)=>s+n,0),p50:a[Math.floor(a.length*.5)]??null,p95:a[Math.floor(a.length*.95)]??null,p99:a[Math.floor(a.length*.99)]??null,max:a.at(-1)??null,over25ms:a.filter(n=>n>25).length,over50ms:a.filter(n=>n>50).length,over100ms:a.filter(n=>n>100).length,over250ms:a.filter(n=>n>250).length};};
 parameters.startupTrace=startupTrace;parameters.relayInputDiagnostics=relayInputDiagnostics;
+parameters.touchInput={enabled:touchInput,profile:touchProfile,sourceHz:touchSourceHz,durationMs:touchDurationMs,
+ mode:touchInput?0:null,inputDelay:touchInput?0:null,scope:'Synthetic native ABI events on an independent Page clock; not a Launcher/iOS bridge or physical phone test'};
 parameters.headedControl=headedControl;
 parameters.chromeSchedulerTrace=schedulerTrace;
 parameters.rafAnomaly=rafAnomaly;
@@ -202,6 +212,7 @@ try {
   const page=await browser.newPage();pages.push(page);page.on('pageerror',e=>errors.push({side,error:e.stack}));
   if(audioOutput)await page.addInitScript(installAudioOutputProbe);
   if(responsiveness)await page.addInitScript(installResponsivenessProbe);
+  if(touchInput)await page.addInitScript(touchModule.installTouchInputProbe,{enabled:true,plan:touchSchedules[side]});
   if(liveCost)await page.addInitScript(installLiveCallbackCostProbe);
   if(rafAnomaly)await page.addInitScript(installRafAnomalyProbe,{enabled:true,side});
   const installSmoothnessHooks=({delay,jitter,dropEvery,side,fallback,burstAt,burstFor,burstDelay,rafDiagnostics,networkTrace,impairmentSite,headedControl})=>{
@@ -406,19 +417,21 @@ try {
   for(const ws of lobbies)ws.send(JSON.stringify({type:'set-ready',ready:true}));await wait(()=>lobbies[0].latest.room?.seats.slice(0,2).every(s=>s?.ready));
   lobbies[0].send(JSON.stringify({type:'start'}));await wait(()=>lobbies[0].latest.type==='start');
  },{port,members});
- for(let side=0;side<2;++side)await pages[side].evaluate(async ({side,port,limit,inputMode,member,responsiveness,rafDiagnostics,networkTrace,liveCost,startupTrace,schedulerTrace})=>{
+ for(let side=0;side<2;++side)await pages[side].evaluate(async ({side,port,limit,inputMode,member,responsiveness,touchInput,rafDiagnostics,networkTrace,liveCost,startupTrace,schedulerTrace})=>{
   const {SharedNetplay}=await import('/app/shared-netplay.mjs');
   const options={netplayUrl:`ws://127.0.0.1:${port}/?room=th09mp-0998&run=1&players=2&player=${side}&member=${member}`,netplayPlayer:side,netplayPlayerCount:2,netplaySeed:12345,netplayDifficulty:3,netplayLoadouts:[{character:0},{character:1}],netplayIceServers:[],netplaySpectatorCount:0};
+  if(touchInput)Object.assign(options,{netplayAdonisMode:0,netplayInputDelay:0,netplayInputDelayAuto:false});
   const m=window.measure={samples:[],frameDetails:[],networkPacing:[],loads:[],notices:[],closed:[],inputTape:[],started:0,ended:0,limit,audioStart:0,finished:false};
-  core.eaglerOptions=options;window.play=new SharedNetplay(core,{onStatus:s=>m.notices.push(s),onClose:s=>{m.closed.push(s);window.responsivenessProbe?.stop();},onResult:()=>{m.finished=true;window.responsivenessProbe?.stop();}});
+  core.eaglerOptions=options;window.play=new SharedNetplay(core,{onStatus:s=>m.notices.push(s),onClose:s=>{m.closed.push(s);window.responsivenessProbe?.stop();window.touchInputProbe?.stop();},onResult:()=>{m.finished=true;window.responsivenessProbe?.stop();window.touchInputProbe?.stop();}});
   window.readStats=()=>Array.from(core.HEAPU32.subarray(core._th09_rollback_info()/4,core._th09_rollback_info()/4+8));
   const updateInput=now=>{
-   if(inputMode==='tape'||responsiveness)return;
+   if(inputMode==='tape'||responsiveness||touchInput)return;
    const age=now-m.started,cycle=Math.floor(age/360)+side;
    // Physical intent continues while simulation is late; no frame-driven drag.
    for(const [scan,down] of [[29,age<2200],[44,age%2100<1500],[42,age%3000<750],[203,cycle%4===0],[205,cycle%4===2]])core._th09_key(scan,+down);
   };
   if(responsiveness)window.observeLocalInput=data=>window.responsivenessProbe.onLocalInput(data);
+  if(touchInput)window.observeLocalInput=data=>window.touchInputProbe.onLocalInput(data);
   if(inputMode==='tape'){
    // Keep the production keyboard sampler and protocol untouched. A new local
    // packet is sent synchronously by LocalCaptured, so set the NEXT frame's
@@ -444,9 +457,10 @@ try {
   core.onGameFrame=(ok,ms)=>{
    window.audioOutputProbe?.observe(core.SDL3,play.active&&!m.ended);
    play.frame();if(!play.active||m.ended)return;const now=performance.now();
-   if(!m.started){m.started=now;m.audioStart=core.SDL3?.audioContext?.currentTime||0;if(responsiveness)window.responsivenessProbe.start(core,side);if(startupTrace)window.startupTransportProbe.mark('first-active');if(schedulerTrace)window.chromeSchedulerTraceProbe?.mark('first-active');}
+   if(!m.started){m.started=now;m.audioStart=core.SDL3?.audioContext?.currentTime||0;if(responsiveness)window.responsivenessProbe.start(core,side);if(touchInput)window.touchInputProbe.start(core,side);if(startupTrace)window.startupTransportProbe.mark('first-active');if(schedulerTrace)window.chromeSchedulerTraceProbe?.mark('first-active');}
    updateInput(now);const s=readStats(),at=core._th09_game_metrics()/4,n=core.HEAPU32[at+9],phase=sessionStatus()[0];
    if(responsiveness)window.responsivenessProbe.onFrame(s,n,phase,now);
+   if(touchInput)window.touchInputProbe.onFrame(s,n,phase,now);
    if(s[0]>=180&&!m.sdlStart){const p=core._sdl_stats()/4;m.sdlStart=Array.from(core.HEAPU32.subarray(p,p+17));}
    if(!Number.isFinite(window.currentGameRafTimestamp))throw Error('Game callback outside measured requestAnimationFrame');
    m.samples.push([now-m.started,ok,ms,...s,n,phase,window.currentGameRafTimestamp]);
@@ -463,7 +477,7 @@ try {
    m.frameDetails.push([s[0],core.HEAPU32[adonis+2],...(tickCost?new Float64Array(core.HEAPU8.buffer,tickCost,2):[])]);
    if(core._th09_probe_load&&m.samples.length%30===0){const at=core._th09_probe_load()/4;m.loads.push([s[0],...core.HEAPU32.subarray(at,at+20)]);}
    if(m.samples.length>50000)throw Error('performance sample overflow');
-   if(s[0]>=limit&&s[1]>=limit){m.ended=now;window.responsivenessProbe?.stop(now);}
+   if(s[0]>=limit&&s[1]>=limit){m.ended=now;window.responsivenessProbe?.stop(now);window.touchInputProbe?.stop(now);}
    if(networkTrace)window.networkTransportProbe.observePacing(core,'frame',m.samples.length-1);
   };
   if(networkTrace)window.networkTransportProbe.attachCore(core);
@@ -472,7 +486,7 @@ try {
   if(startupTrace)window.startupTransportProbe.mark('before-connect');
   await play.connect(options);
   if(startupTrace)window.startupTransportProbe.mark('after-connect');
- },{side,port,limit,inputMode,member:members[side],responsiveness,rafDiagnostics,networkTrace,liveCost,startupTrace,schedulerTrace});
+ },{side,port,limit,inputMode,member:members[side],responsiveness,touchInput,rafDiagnostics,networkTrace,liveCost,startupTrace,schedulerTrace});
  if(profile)for(const cdp of sessions){await cdp.send('Profiler.enable');await cdp.send('Profiler.setSamplingInterval',{interval:500});await cdp.send('Profiler.start');}
  hostProbe?.mark('formal-poll-start');
  const began=Date.now(),timeout=limit/60*1000*3+20000;
@@ -533,7 +547,7 @@ try {
   const startupTransport=window.startupTransportProbe?.snapshot({stop:true});
   const finalStats=readStats();
   return {stats:finalStats,hash:core._th09_network_hash()>>>0,audited,route:window.__eaglerNetplayTransport,routeEvidence,renderer,audio,measure,impairment,memoryBytes:core.HEAPU8.length,startupTransport,
-   audioOutput:window.audioOutputProbe?.snapshot(),responsiveness:window.responsivenessProbe?.snapshot(),rafDiagnostics:window.rafDiagnosticProbe?.snapshot(),rafAnomaly:rafAnomaly?window.rafAnomalyProbe?.snapshot({final:true,stats:finalStats}):undefined,networkTransport:window.networkTransportProbe?.snapshot(),liveCallbackCosts:window.liveCallbackCostProbe?.snapshot(),lifecycle:window.gameLifecycle,sdl,confirmedHashes:window.confirmedHashTrace||[]};
+   audioOutput:window.audioOutputProbe?.snapshot(),responsiveness:window.responsivenessProbe?.snapshot(),touchInput:window.touchInputProbe?.snapshot(),rafDiagnostics:window.rafDiagnosticProbe?.snapshot(),rafAnomaly:rafAnomaly?window.rafAnomalyProbe?.snapshot({final:true,stats:finalStats}):undefined,networkTransport:window.networkTransportProbe?.snapshot(),liveCallbackCosts:window.liveCallbackCostProbe?.snapshot(),lifecycle:window.gameLifecycle,sdl,confirmedHashes:window.confirmedHashTrace||[]};
  },{release,rafAnomaly})));
  retainedResults=results;hostProbe?.mark('browser-sample-capture-complete');
  if(schedulerTrace)await finishSchedulerTrace('capture-stop');
@@ -569,6 +583,14 @@ try {
  assert.deepEqual(results[0].confirmedHashes.slice(0,confirmedChecks),results[1].confirmedHashes.slice(0,confirmedChecks),'Confirmed hash trace diverged');
  if(audioOutput)for(const r of results){assert.ok(r.audioOutput?.blocks.length>100&&r.audioOutput.nonzeroBlocks>100,'Actual audio output not exercised');assert.ok(!r.audioOutput.overflow);}
  if(responsiveness)for(const r of results){assert.ok(r.responsiveness?.valid,JSON.stringify(r.responsiveness?.errors));assert.ok(r.responsiveness.counts.planned>10&&r.responsiveness.counts.captured>10,'Independent input response was not exercised');}
+ if(touchInput)for(const r of results){
+  const p=r.touchInput;assert.ok(p?.valid,JSON.stringify({errors:p?.errors,overflow:p?.overflow}));
+  assert.equal(p.configuration.profile,touchProfile);assert.equal(p.configuration.sourceHz,touchSourceHz);
+  assert.ok(p.clock.startedAt!==null&&p.counts.analogActiveFrames>=100&&p.counts.targetChanges>=50&&p.counts.positionChangedObservations>=20,'Continuous native touch load was not exercised');
+  assert.ok(p.captures.length>=limit,'Missing actual local touch input tape');
+  for(let i=0;i<limit;++i)assert.equal(p.captures[i].frame,i,'Incomplete touch tape frame prefix');
+  r.touchInputTapeSha256=createHash('sha256').update(JSON.stringify(p.captures.slice(0,limit).map(c=>[c.frame,c.rawHex]))).digest('hex');
+ }
  if(rafDiagnostics)for(const r of results){assert.ok(r.rafDiagnostics?.valid,JSON.stringify(r.rafDiagnostics?.hookErrors));assert.ok(r.rafDiagnostics.counts.gameFrames>100&&r.rafDiagnostics.callbacks.some(c=>c.game),'Game RAF diagnostics were not exercised');}
  if(rafAnomaly)for(const r of results)assert.ok(r.rafAnomaly?.valid,JSON.stringify(r.rafAnomaly?.errors));
  if(networkTrace)for(const r of results){assert.ok(r.networkTransport?.valid,JSON.stringify({errors:r.networkTransport?.errors,overflow:r.networkTransport?.overflow,identity:r.networkTransport?.identity}));assert.ok(r.networkTransport.coverage.exercised,'Network transport diagnostics were not exercised');}
@@ -601,9 +623,11 @@ try {
  assert.equal(sha(fileURLToPath(new URL('./smoothness-window.mjs',import.meta.url))),identity.smoothnessWindow,'Smoothness window helper changed during run');
  if(rafAnomaly){identity.rafAnomalyProbeAfter=sha(fileURLToPath(new URL('./raf-anomaly-probe.mjs',import.meta.url)));assert.equal(identity.rafAnomalyProbeAfter,identity.rafAnomalyProbe,'RAF anomaly helper changed during run');}
  assert.equal(sha(resolve(root,'tests/browser/presentation.html')),identity.presentationHarness,'Presentation fixture changed during run');
+ if(touchInput)assert.equal(sha(fileURLToPath(new URL('./touch-input-probe.mjs',import.meta.url))),identity.touchInputProbe,'Touch helper changed during run');
  hostProbe?.mark('success-report-ready');const hostLoadSnapshot=await hostProbe?.stop();
  const report={passed:true,scope:'Two separate desktop Chromium processes; native GPU; real '+(fallback?'WebSocket relay':'RTC')+' with '+(impairmentSite==='client'?'seeded application-send impairment on input and repair lanes':impairmentSite==='relay'?'synchronous client send and seeded relay-process input impairment; burst anchored to relay first input receive':'synchronous client send; no injected send timers')+'; '+(inputMode==='tape'?'wire-verified frame-indexed hosted-key tape':'wall-clock synthetic keyboard')+(audioOutput?'; sampled SDL output blocks, not speaker/acoustic acceptance':'; audio clock only, not acoustic acceptance'),presentationMeasurement:'RAF timestamps of callbacks with a new renderer submission; NOT physical scanout. Completion gaps are reported separately because varying callback work is not itself a missed vsync.',identity,parameters,browsers:browsers.map(b=>b.version()),sameFrame,finalComparable,confirmedChecks,summaryMethod,summary,legacySummary,results,errors,relayLog,relayTransport:relayTraceSnapshot,hostLoad:hostLoadSnapshot};
  if(headedControl){headedControlEvidence.identityVerified=headedControlEvidence.launches.length===2&&headedControlEvidence.launches.every(row=>row.verified);report.headedControl=headedControlEvidence;}
+ if(touchInput)report.scope=report.scope.replace('wall-clock synthetic keyboard','independent Page-clock synthetic native ABI '+touchProfile+' touch; conditional wire-to-render progress, not physical-phone or Launcher bridge evidence');
  if(schedulerTrace)report.chromeSchedulerTrace=schedulerTraceEvidence;
  if(rafAnomaly)report.rafAnomalyNodePolls=rafAnomalyNodePolls;
  writeFileSync(resolve(out,label+'-report.json'),JSON.stringify(report,null,2));console.log(JSON.stringify({identity,parameters,sameFrame,summary,hashes:results.map(r=>r.hash)}));
@@ -612,7 +636,7 @@ try {
  if(schedulerTrace)try{await finishSchedulerTrace('failure');}catch{schedulerTraceEvidence??=[{status:'finalization-failed',collectionValid:false}];}
  const hostLoadSnapshot=await hostProbe?.stop();
  if(diagnosticRelay)try{relayTraceSnapshot=await diagnosticRelay.snapshot({stop:true});}catch(error){relayTraceError=String(error.stack||error);}
- const partial=await Promise.all(pages.map(async p=>{try{return await p.evaluate(enabled=>{window.responsivenessProbe?.stop();window.networkTransportProbe?.stop('failure');const stats=window.readStats?.();return {startupTransport:window.startupTransportProbe?.snapshot({stop:true}),measure:window.measure,impairment:window.impairment,stats,audioOutput:window.audioOutputProbe?.snapshot(),responsiveness:window.responsivenessProbe?.snapshot(),rafDiagnostics:window.rafDiagnosticProbe?.snapshot(),rafAnomaly:enabled?window.rafAnomalyProbe?.snapshot({final:true,stats}):undefined,networkTransport:window.networkTransportProbe?.snapshot(),liveCallbackCosts:window.liveCallbackCostProbe?.snapshot(),lifecycle:window.gameLifecycle,confirmedHashes:window.confirmedHashTrace};},rafAnomaly);}catch{return null;}}));
+ const partial=await Promise.all(pages.map(async p=>{try{return await p.evaluate(enabled=>{window.responsivenessProbe?.stop();window.touchInputProbe?.stop();window.networkTransportProbe?.stop('failure');const stats=window.readStats?.();return {startupTransport:window.startupTransportProbe?.snapshot({stop:true}),measure:window.measure,impairment:window.impairment,stats,audioOutput:window.audioOutputProbe?.snapshot(),responsiveness:window.responsivenessProbe?.snapshot(),touchInput:window.touchInputProbe?.snapshot(),rafDiagnostics:window.rafDiagnosticProbe?.snapshot(),rafAnomaly:enabled?window.rafAnomalyProbe?.snapshot({final:true,stats}):undefined,networkTransport:window.networkTransportProbe?.snapshot(),liveCallbackCosts:window.liveCallbackCostProbe?.snapshot(),lifecycle:window.gameLifecycle,confirmedHashes:window.confirmedHashTrace};},rafAnomaly);}catch{return null;}}));
  if(headedControl)await Promise.all(pages.map((page,side)=>recordHeadedWindow(page,sessions[side],side,'failure-observed')));
  if(headedControl)headedControlEvidence.identityVerified=headedControlEvidence.launches.length===2&&headedControlEvidence.launches.every(row=>row.verified);
  if(rafAnomaly)try{identity.rafAnomalyProbeAfter=sha(fileURLToPath(new URL('./raf-anomaly-probe.mjs',import.meta.url)));}catch{identity.rafAnomalyProbeAfter=null;}
