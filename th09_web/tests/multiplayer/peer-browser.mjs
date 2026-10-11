@@ -1,14 +1,17 @@
 import assert from 'node:assert/strict';
-import {readFileSync,writeFileSync} from 'node:fs';
+import {existsSync,readFileSync,writeFileSync} from 'node:fs';
 import {resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
 import {presentationServer} from '../../scripts/presentation-server.mjs';
 import {launchBrowser} from '../../../th10_web/scripts/native/browser-launch.mjs';
+import {startHostLoadProbe} from './host-load-probe.mjs';
 const root=fileURLToPath(new URL('../../',import.meta.url));
 const label=process.env.RUN_LABEL||'peer-browser';assert.match(label,/^[\w-]+$/);
 const fixedDelay=Number(process.env.FIXED_DELAY_FRAMES||0),forceCorrection=process.env.FORCE_CORRECTION==='1';
 const limit=Number(process.env.PEER_FRAMES||900),hardware=process.env.NATIVE_GPU==='1';
+const cpuRate=Number(process.env.CPU_RATE??1),hostLoad=process.env.HOST_LOAD==='1';
+assert.ok(cpuRate===1||cpuRate===4,'CPU_RATE must be 1 or 4');
 const pauseTrace=process.env.PAUSE_TRACE==='1';
 const adonisMode=Number(process.env.ADONIS_MODE||0),inputDelay=Number(process.env.INPUT_DELAY_FRAMES||0);
 const captureTrace=process.env.CAPTURE_TRACE==='1';
@@ -24,15 +27,44 @@ assert.ok(!forceCorrection||inputTrace==='charged-strafe-alternating-focus');
 assert.ok(Number.isInteger(fixedDelay)&&fixedDelay>=0&&fixedDelay<=8);
 assert.ok(Number.isInteger(limit)&&limit>=300&&limit<=12000);
 assert.ok(!forceCorrection||fixedDelay>0);
+// At 4x an 8 ms recovery budget may admit only one historical tick per call.
+// Predeclare enough finite calls for that case instead of mistaking a harness
+// iteration ceiling for a failure to recover. This is not a time/FPS gate.
+const maximumIterations=Math.max(4000,limit*(cpuRate===4?Math.max(5,fixedDelay+3):5));
 const artifactDirectory=resolve(process.env.PC_BUILD||resolve(root,'artifacts/sdl3'));
-const {server,netplay,url}=await presentationServer(0,{artifactDirectory});
-const browser=await launchBrowser({args:[...(hardware?['--enable-gpu','--use-gl=angle','--use-angle=d3d11']:['--enable-unsafe-swiftshader']),'--autoplay-policy=no-user-gesture-required']});
-const page=await browser.newPage(),errors=[];
-page.on('pageerror',e=>errors.push(e.stack));
+const reportPath=resolve(root,'artifacts/multiplayer-tests',label+'-report.json');
+const failurePath=resolve(root,'artifacts/multiplayer-tests',label+'-failure.json');
+const cleanupPath=resolve(root,'artifacts/multiplayer-tests',label+'-cleanup.json');
+assert.ok(!existsSync(reportPath)&&!existsSync(failurePath)&&!existsSync(cleanupPath),'Retained peer run already exists');
+const sha=path=>createHash('sha256').update(readFileSync(path)).digest('hex');
+const identityFiles={harness:fileURLToPath(import.meta.url),
+  wasm:resolve(artifactDirectory,'th09-presentation.wasm'),
+  loader:resolve(artifactDirectory,'th09-presentation.mjs'),
+  manifest:resolve(artifactDirectory,'build.json'),
+  presentationHarness:resolve(root,'tests/browser/presentation.html'),
+  presentationServer:fileURLToPath(new URL('../../scripts/presentation-server.mjs',import.meta.url)),
+  browserLauncher:fileURLToPath(new URL('../../../th10_web/scripts/native/browser-launch.mjs',import.meta.url))};
+if(hostLoad)identityFiles.hostLoadProbe=fileURLToPath(new URL('./host-load-probe.mjs',import.meta.url));
+const identity=Object.fromEntries(Object.entries(identityFiles).map(([name,path])=>[name,sha(path)]));
+const parameters={fixedDelay,forceCorrection,limit,maximumIterations,hardware,pauseTrace,inputTrace,adonisMode,inputDelay,captureTrace,deliveryClock,cpuRate,hostLoad,
+  cpuThrottle:{method:'CDP Emulation.setCPUThrottlingRate',rate:cpuRate,configuredBefore:'same-origin iframe creation and openProbe',scope:'All three sequential worlds share the throttled renderer. This is controlled recovery call cost, not real multiplayer or native rAF presentation cadence.'}};
+let hostProbe=null,hostLoadSnapshot;
+const finishHost=async()=>{if(hostProbe&&!hostLoadSnapshot)hostLoadSnapshot=await hostProbe.stop();return hostLoadSnapshot;};
+let host,browser,page,cdp,retainedResult,browserVersion,partialCapture;
+const errors=[],cleanupErrors=[];
 try {
-  await page.goto(url);
-  const result=await page.evaluate(async({fixedDelay,forceCorrection,limit,hardware,pauseTrace,inputTrace,adonisMode,inputDelay,captureTrace,deliveryClock})=>{
-    const frames=[];
+  host=await presentationServer(0,{artifactDirectory});
+  browser=await launchBrowser({args:[...(hardware?['--enable-gpu','--use-gl=angle','--use-angle=d3d11']:['--enable-unsafe-swiftshader']),'--autoplay-policy=no-user-gesture-required']});
+  page=await browser.newPage();page.on('pageerror',e=>errors.push(e.stack));
+  hostProbe=hostLoad?startHostLoadProbe():null;hostProbe?.mark('controlled-peer-page-ready');
+  await page.goto(host.url);
+  cdp=await page.context().newCDPSession(page);
+  await cdp.send('Emulation.setCPUThrottlingRate',{rate:cpuRate});
+  // Keep the owning CDP session alive for the complete measured workload.
+  browserVersion=browser.version();
+  hostProbe?.mark('controlled-peer-throttle-configured');
+  const result=await page.evaluate(async({fixedDelay,forceCorrection,limit,maximumIterations,hardware,pauseTrace,inputTrace,adonisMode,inputDelay,captureTrace,deliveryClock})=>{
+    const frames=[],startedAt=performance.now(),timeOriginMs=performance.timeOrigin;
     for(let i=0;i<3;++i){const frame=document.createElement('iframe');frame.src='/';document.body.append(frame);await new Promise(r=>frame.onload=r);frames.push(frame.contentWindow);}
     for(const w of frames)await w.openProbe(0,1,2,3,true);
     const peers=frames.slice(0,2),pending=[],captures=[[],[]],deliveryFrontier=[0,0];let clock=0,sequence=0;
@@ -85,8 +117,10 @@ try {
       if(!peers.every(w=>stats(w)[6]))throw Error('Fixed-depth handshake incomplete');
     }
     for(const w of peers)w.core._th09_probe_frame_limit(limit);
-    const ticks=[0,0],waits=[0,0],milliseconds=[0,0],samples=[[],[]],peakBullets=[0,0],phases=[new Set(),new Set()],pauseCalls=[0,0],preRecoveryCaptures=[0,0],partialRecoveryCalls=[0,0];let iterations=0;
-    while(iterations++<Math.max(4000,limit*5)){
+    const ticks=[0,0],waits=[0,0],milliseconds=[0,0],samples=[[],[]],peakBullets=[0,0],peakEnemies=[0,0],phases=[new Set(),new Set()],pauseCalls=[0,0],preRecoveryCaptures=[0,0],partialRecoveryCalls=[0,0];let iterations=0;
+    // Read only on failure, with no extra work in the tick or delivery path.
+    globalThis.__th09ControlledPeerSnapshot=()=>({partial:true,frames:limit,iterations,clock,summary:peers.map(stats),ticks,waits,milliseconds,samples,captures,peakBullets,peakEnemies,phases:phases.map(s=>[...s]),pauseCalls,preRecoveryCaptures,partialRecoveryCalls,pendingPackets:pending.length,deliveryFrontier,observationClock:{timeOriginMs,startedAt,endedAt:performance.now(),includes:'partial controlled workload; not gameplay FPS'}});
+    while(iterations++<maximumIterations){
       deliver();
       for(let side=0;side<2;++side){const w=peers[side],s=stats(w),capturedBefore=captures[side].length;physical(w,keys(side,s[4]));const begin=performance.now();let ok=1;
         if(s[0]<=limit){ok=w.core._th09_game_tick(hardware?1:0);if(!ok)throw Error(`peer ${side} frame ${s[0]}: ${error(w)}`);if(ok===2)++waits[side];++ticks[side];}
@@ -94,7 +128,7 @@ try {
         const work=performance.now()-begin,after=stats(w);milliseconds[side]+=work;
         if(after[0]<s[0])++partialRecoveryCalls[side];
         for(let i=capturedBefore;i<captures[side].length;++i)if(captures[side][i][3]<after[2])++preRecoveryCaptures[side];
-        let bullets=null;if(w.core._th09_probe_load){const at=w.core._th09_probe_load()/4;bullets=w.core.HEAPU32[at]+w.core.HEAPU32[at+1];peakBullets[side]=Math.max(peakBullets[side],bullets);}
+        let bullets=null,enemies=null;if(w.core._th09_probe_load){const at=w.core._th09_probe_load()/4;bullets=w.core.HEAPU32[at]+w.core.HEAPU32[at+1];enemies=w.core.HEAPU32[at+2]+w.core.HEAPU32[at+3];peakBullets[side]=Math.max(peakBullets[side],bullets);peakEnemies[side]=Math.max(peakEnemies[side],enemies);}
         const phase=w.core.HEAP32[w.core._th09_session_status()/4];phases[side].add(phase);
         pauseCalls[side]+=w.core.HEAP32[w.core._th09_probe_status()/4+9]!==0;
         // With an active session, success includes exactly one fresh frontier
@@ -102,7 +136,7 @@ try {
         // the restore distance even when its replay spans several callbacks.
         const restoredDepth=after[2]-s[2]===1?s[0]+after[3]-s[3]+(ok===1?1:0)-after[0]:0;
         if(restoredDepth<0||restoredDepth>8)throw Error('Invalid reconstructed restore distance');
-        samples[side].push([s[0],after[0],after[2]-s[2],after[3]-s[3],work,ok,bullets,phase,restoredDepth]);
+        samples[side].push([s[0],after[0],after[2]-s[2],after[3]-s[3],work,ok,bullets,phase,restoredDepth,enemies]);
       }
       ++clock;
       const s=peers.map(stats);if(s.every(v=>v[0]===limit&&v[1]===limit))break;
@@ -132,15 +166,37 @@ try {
     const replays=frames.map(w=>{if(!w.core._th09_probe_save_replay())throw Error('replay '+error(w));return w.core.FS.readFile('/save/replay/th9_25.rpy');});
     if(!replays.slice(1).every(b=>b.length===replays[0].length&&b.every((v,i)=>v===replays[0][i])))throw Error('replay differs from exact-input reference');
     const gl=frames[0].document.querySelector('canvas').getContext('webgl2'),ext=gl.getExtension('WEBGL_debug_renderer_info');
-    return {frames:limit,iterations,summary,adonis,hashes,audited,framebuffersEqual:true,replayBytes:replays[0].length,ticks,waits,milliseconds,costs,peakBullets,samples,phases:phases.map(s=>[...s]),pauseCalls,captures,preRecoveryCaptures,partialRecoveryCalls,
+    return {frames:limit,iterations,summary,adonis,hashes,audited,framebuffersEqual:true,replayBytes:replays[0].length,ticks,waits,milliseconds,costs,peakBullets,peakEnemies,samples,phases:phases.map(s=>[...s]),pauseCalls,captures,preRecoveryCaptures,partialRecoveryCalls,
+      sampleColumns:['nextBefore','nextAfter','correctionsDelta','resimulatedDelta','nativeCallMs','returnCode','aliveBullets','sessionPhase','requestedRestoreDepth','aliveEnemies'],
+      observationClock:{timeOriginMs,startedAt,endedAt:performance.now(),includes:'iframe setup, all three worlds, oracle and readback; not a gameplay throughput timer'},
       renderer:ext?gl.getParameter(ext.UNMASKED_RENDERER_WEBGL):gl.getParameter(gl.RENDERER)};
-  },{fixedDelay,forceCorrection,limit,hardware,pauseTrace,inputTrace,adonisMode,inputDelay,captureTrace,deliveryClock});
+  },{fixedDelay,forceCorrection,limit,maximumIterations,hardware,pauseTrace,inputTrace,adonisMode,inputDelay,captureTrace,deliveryClock});
+  retainedResult=result;
   assert.equal(errors.length,0,errors.join('\n'));
   if(hardware)assert.doesNotMatch(result.renderer,/swiftshader|llvmpipe|microsoft basic render/i);
   const wasm=JSON.parse(readFileSync(resolve(artifactDirectory,'build.json'))).sha256;
-  const harnessSha256=createHash('sha256').update(readFileSync(fileURLToPath(import.meta.url))).digest('hex');
-  writeFileSync(resolve(root,'artifacts/multiplayer-tests',label+'-report.json'),JSON.stringify({passed:true,wasm,harnessSha256,parameters:{fixedDelay,forceCorrection,limit,hardware,pauseTrace,inputTrace,adonisMode,inputDelay,captureTrace,deliveryClock},scope:'Real TH09 per-frame history ring, packet/session and gameplay; injected '+deliveryClock+'-delay transport; three sequential worlds in one Chromium process, not real RTC wall-clock pacing or public TURN',result,errors},null,2));
+  assert.equal(wasm,identity.wasm,'Build manifest does not describe the loaded Wasm');
+  const identityAfter=Object.fromEntries(Object.entries(identityFiles).map(([name,path])=>[name,sha(path)]));
+  assert.deepEqual(identityAfter,identity,'Controlled peer inputs changed during the run');
+  hostProbe?.mark('controlled-peer-gameplay-and-oracles-finished');await finishHost();
+  writeFileSync(reportPath,JSON.stringify({passed:true,wasm,harnessSha256:identity.harness,identity,identityAfter,browserVersion,parameters,scope:'Real TH09 per-frame history ring, packet/session and gameplay; injected '+deliveryClock+'-delay transport; three sequential worlds in one CPU-throttled Chromium renderer, not real RTC wall-clock pacing, native rAF presentation cadence or public TURN',result,errors,hostLoad:hostLoadSnapshot},null,2),{flag:'wx'});
   console.log(JSON.stringify({...result,samples:undefined,captures:undefined}));
 } catch(error) {
-  writeFileSync(resolve(root,'artifacts/multiplayer-tests',label+'-failure.json'),JSON.stringify({error:error.stack,errors},null,2));throw error;
-} finally {await browser.close();netplay.close();await new Promise(r=>server.close(r));}
+  hostProbe?.mark('controlled-peer-failure');
+  if(!retainedResult&&page){
+    let partialTimer;
+    try{
+      retainedResult=await Promise.race([page.evaluate(()=>globalThis.__th09ControlledPeerSnapshot?.()??null),new Promise((_,reject)=>{partialTimer=setTimeout(()=>reject(Error('Partial controlled-peer snapshot timed out after 5000 ms')),5000);})]);
+      partialCapture={status:retainedResult?'captured':'not-installed'};
+    }catch(partialError){partialCapture={status:'failed',error:String(partialError)};}
+    finally{clearTimeout(partialTimer);}
+  }
+  try{await finishHost();}catch(stopError){cleanupErrors.push({stage:'host-stop',error:String(stopError)});}
+  writeFileSync(failurePath,JSON.stringify({error:error.stack,errors,identity,parameters,browserVersion,result:retainedResult,partialCapture,hostLoad:hostLoadSnapshot,cleanupErrors},null,2),{flag:'wx'});throw error;
+} finally {
+  for(const [stage,close] of [['host-stop',finishHost],['cdp-detach',()=>cdp?.detach()],['browser-close',()=>browser?.close()],['relay-close',()=>host?.netplay.close()],['server-close',()=>host?new Promise((accept,reject)=>host.server.close(error=>error?reject(error):accept())):undefined]]){
+    try{await close();}catch(error){cleanupErrors.push({stage,error:String(error)});}
+  }
+  writeFileSync(cleanupPath,JSON.stringify({complete:cleanupErrors.length===0,errors:cleanupErrors},null,2),{flag:'wx'});
+  if(cleanupErrors.length)process.exitCode=1;
+}

@@ -17,6 +17,7 @@ import {installNetworkTransportProbe} from './network-transport-probe.mjs';
 import {startRelayDiagnosticProcess} from './relay-transport-controller.mjs';
 import {installLiveCallbackCostProbe} from './callback-cost-probe.mjs';
 import {installStartupTransportProbe} from './startup-transport-probe.mjs';
+import {SMOOTHNESS_WINDOW_SCHEMA,summarizeSmoothnessWindow} from './smoothness-window.mjs';
 
 const root=fileURLToPath(new URL('../../',import.meta.url));
 const label=process.env.RUN_LABEL||'smoothness';
@@ -30,6 +31,8 @@ const liveCost=process.env.LIVE_COST==='1';assert.ok(!liveCost||!release,'LIVE_C
 const startupTrace=process.env.STARTUP_TRACE==='1';
 const headedControl=process.env.HEADED_CONTROL==='1';
 const schedulerTrace=process.env.CHROME_SCHED_TRACE==='1';
+const rafAnomaly=process.env.RAF_ANOMALY==='1';
+const installRafAnomalyProbe=rafAnomaly?(await import('./raf-anomaly-probe.mjs')).installRafAnomalyProbe:null;
 const browserArgs=['--enable-gpu','--use-gl=angle','--use-angle=d3d11','--autoplay-policy=no-user-gesture-required'];
 // Keep Playwright's other headless defaults while changing only the window mode.
 const headlessAuxiliaryArgs=['--hide-scrollbars','--mute-audio','--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4'];
@@ -54,6 +57,7 @@ const rafDiagnostics=process.env.RAF_DIAGNOSTICS==='1';
 const hostLoad=process.env.HOST_LOAD==='1';
 const networkTrace=process.env.NETWORK_TRACE==='1';
 assert.ok(!schedulerTrace||(release&&rafDiagnostics&&!profile&&!liveCost&&!networkTrace),'Scheduler trace requires release/RAF diagnostics and excludes CPU/live/browser-packet profiling');
+assert.ok(!rafAnomaly||(release&&rafDiagnostics&&!schedulerTrace&&!profile&&!liveCost&&!networkTrace),'RAF anomaly observations require release/RAF diagnostics and exclude heavy tracing');
 assert.ok(!networkTrace||fallback,'NETWORK_TRACE currently requires --relay');
 const responsiveness=process.env.RESPONSIVENESS==='1';
 assert.ok(!responsiveness||inputMode==='wall-clock','Responsiveness requires independent wall-clock input');
@@ -65,6 +69,7 @@ const out=resolve(root,'artifacts/multiplayer-tests');mkdirSync(out,{recursive:t
 const sha=path=>createHash('sha256').update(readFileSync(path)).digest('hex');
 const wasmPath=resolve(artifactDirectory,release?'th09.wasm':'th09-presentation.wasm');
 const identity={wasm:sha(wasmPath),harness:sha(fileURLToPath(import.meta.url)),loader:sha(resolve(artifactDirectory,release?'th09.mjs':'th09-presentation.mjs'))};
+identity.smoothnessWindow=sha(fileURLToPath(new URL('./smoothness-window.mjs',import.meta.url)));
 if(headedControl)identity.headedBrowserExecutable={selection:'playwright.chromium.executablePath; existing normal Windows chrome.exe',basename:basename(browserLaunchOptions.executablePath),bytes:statSync(browserLaunchOptions.executablePath).size,sha256:sha(browserLaunchOptions.executablePath),launcherSha256:sha(fileURLToPath(new URL('../../../th10_web/scripts/native/browser-launch.mjs',import.meta.url)))};
 const relayPath=resolve(process.env.EAGLER_RELAY_SOURCE||'D:/workspace/eagler/eagler-touhou/server/netplay-relay.mjs');
 identity.relay=sha(relayPath);identity.shell=sha(resolve(root,'sdl-runtime/shared-netplay.mjs'));identity.presentationHarness=sha(resolve(root,'tests/browser/presentation.html'));
@@ -75,6 +80,7 @@ if(networkTrace)identity.networkTransportProbe=sha(fileURLToPath(new URL('./netw
 if(liveCost)identity.callbackCostProbe=sha(fileURLToPath(new URL('./callback-cost-probe.mjs',import.meta.url)));
 if(startupTrace)identity.startupTransportProbe=sha(fileURLToPath(new URL('./startup-transport-probe.mjs',import.meta.url)));
 if(schedulerTrace)identity.chromeSchedulerTrace=sha(fileURLToPath(new URL('./chrome-scheduler-trace.mjs',import.meta.url)));
+if(rafAnomaly)identity.rafAnomalyProbe=sha(fileURLToPath(new URL('./raf-anomaly-probe.mjs',import.meta.url)));
 if(relayDiagnostics)for(const [key,file] of [['relayTransportProbe','relay-transport-probe.mjs'],['relayTransportFixture','relay-transport-fixture.mjs'],['relayTransportController','relay-transport-controller.mjs']])identity[key]=sha(fileURLToPath(new URL('./'+file,import.meta.url)));
 if(relayDiagnostics)identity.relayStartupProbe=sha(fileURLToPath(new URL('./relay-startup-probe.mjs',import.meta.url)));
 const port=await new Promise(r=>{const s=net.createServer();s.listen(0,'127.0.0.1',()=>{const p=s.address().port;s.close(()=>r(p));});});
@@ -85,11 +91,15 @@ if(Number.isInteger(relay.pid))hostProbe?.registerKnownProcess(relay.pid,'netpla
 hostProbe?.mark('relay-spawned');
 let relayLog='',host,retainedResults,relayTraceSnapshot,relayTraceError;const browsers=[],pages=[],sessions=[],errors=[];
 const schedulerTraces=[];let schedulerTraceEvidence,schedulerTraceFinish;
+const rafAnomalyNodePolls=rafAnomaly?{clock:'Node performance.now()',timeOrigin:performance.timeOrigin,
+ limit:2048,attempted:0,overflow:0,rows:[],inFlight:null,last:null,
+ scope:'Existing 100 ms status-poll CDP request/return brackets. Page clocks are separate; a missing poll is not proof of a pending RAF.'}:undefined;
 const parameters={limit,delay,jitter,slow,dropEvery,release,profile,fallback,inputMode,audioOutput,responsiveness,burstAt,burstFor,burstDelay,rafDiagnostics,hostLoad,networkTrace,impairmentSite,relayDiagnostics,expectedRtcPath,liveCost,clientSendMode:impairmentSite==='client'?'timer':'synchronous',burstClock:impairmentSite==='relay'?'relay-first-nonempty-input-receive':'browser-active',cpuThrottle:{ratesBySide:[1,slow],configuredAfter:'openProbe',scope:'openProbe and after-open counters precede CPU throttling; subsequent netplay setup and first game callback use the configured per-side rates.'}};
 const distribution=values=>{const a=values.slice().sort((a,b)=>a-b);return {count:a.length,total:a.reduce((s,n)=>s+n,0),p50:a[Math.floor(a.length*.5)]??null,p95:a[Math.floor(a.length*.95)]??null,p99:a[Math.floor(a.length*.99)]??null,max:a.at(-1)??null,over25ms:a.filter(n=>n>25).length,over50ms:a.filter(n=>n>50).length,over100ms:a.filter(n=>n>100).length,over250ms:a.filter(n=>n>250).length};};
 parameters.startupTrace=startupTrace;parameters.relayInputDiagnostics=relayInputDiagnostics;
 parameters.headedControl=headedControl;
 parameters.chromeSchedulerTrace=schedulerTrace;
+parameters.rafAnomaly=rafAnomaly;
 async function finishSchedulerTrace(reason){
  if(!schedulerTrace)return undefined;
  if(!schedulerTraceFinish)schedulerTraceFinish=(async()=>{
@@ -193,6 +203,7 @@ try {
   if(audioOutput)await page.addInitScript(installAudioOutputProbe);
   if(responsiveness)await page.addInitScript(installResponsivenessProbe);
   if(liveCost)await page.addInitScript(installLiveCallbackCostProbe);
+  if(rafAnomaly)await page.addInitScript(installRafAnomalyProbe,{enabled:true,side});
   const installSmoothnessHooks=({delay,jitter,dropEvery,side,fallback,burstAt,burstFor,burstDelay,rafDiagnostics,networkTrace,impairmentSite,headedControl})=>{
    if(fallback)window.RTCPeerConnection=undefined;
    const lifecycle=window.gameLifecycle=[];
@@ -302,6 +313,15 @@ try {
      },
      onSample(sample,started){
       if(currentFrame){currentFrame.sampleAt=started+sample[0];currentFrame.afterSampleAt=performance.now();}
+     },
+     peek(){
+      // Page-local references only. The anomaly helper returns compact fields,
+      // never these arrays; at most four pending Map entries are inspected.
+      const pendingIndices=[],iterator=pending.values();
+      for(let i=0;i<4;++i){const item=iterator.next();if(item.done)break;pendingIndices.push(item.value.index);}
+      return {version:1,snapshotAt:performance.now(),valid:!overflow&&!hookErrors.length&&window.requestAnimationFrame===rafHook&&window.cancelAnimationFrame===cancelHook&&(!hookedCore||hookedCore.onGameFrame===frameHook),
+       counts,lastPauseRequested,pendingCount:pending.size,pendingTruncated:pending.size>pendingIndices.length,
+       pendingIndices,callbacks,requests,frames,controls};
      },
      snapshot(){
       return {version:1,clock:'Page performance.now(); rafTimestamp is the browser supplied frame timestamp, not entry time.',
@@ -458,7 +478,20 @@ try {
  const began=Date.now(),timeout=limit/60*1000*3+20000;
  let status;
  while(Date.now()-began<timeout){
-  status=await Promise.all(pages.map(p=>p.evaluate(()=>({stats:readStats(),ended:measure.ended,closed:measure.closed,finished:measure.finished}))));
+  const poll=rafAnomaly?{index:rafAnomalyNodePolls.attempted++,requestedAt:performance.now(),returnedAt:null,sides:[]}:null;
+  if(poll)rafAnomalyNodePolls.inFlight=poll;
+  status=await Promise.all(pages.map(async(p,side)=>{
+   const bracket=poll?{side,requestedAt:performance.now(),returnedAt:null,pagePoll:null,failed:false}:null;
+   if(bracket)poll.sides[side]=bracket;
+   try{
+    const row=await p.evaluate(enabled=>{const stats=readStats();return {stats,ended:measure.ended,closed:measure.closed,finished:measure.finished,
+     rafAnomaly:enabled?window.rafAnomalyProbe?.observe({stats}):undefined};},rafAnomaly);
+    if(bracket)bracket.pagePoll=row.rafAnomaly?.poll??null;return row;
+   }catch(error){if(bracket)bracket.failed=true;throw error;}
+   finally{if(bracket)bracket.returnedAt=performance.now();}
+  }));
+  if(poll){poll.returnedAt=performance.now();rafAnomalyNodePolls.last=poll;rafAnomalyNodePolls.inFlight=null;
+   if(rafAnomalyNodePolls.rows.length<rafAnomalyNodePolls.limit)rafAnomalyNodePolls.rows.push(poll);else ++rafAnomalyNodePolls.overflow;}
   if(errors.length||status.some(s=>s.closed.length))throw Error('runtime failure '+JSON.stringify({errors,status}));
   if(status.every(s=>s.ended))break;
   if(status.some(s=>s.finished))throw Error('match ended before requested workload '+JSON.stringify(status));
@@ -467,7 +500,7 @@ try {
  assert.ok(status.every(s=>s.ended),'incomplete workload '+JSON.stringify(status));
  hostProbe?.mark('formal-poll-complete');
  if(profile)for(let side=0;side<2;++side){const result=await sessions[side].send('Profiler.stop');writeFileSync(resolve(out,`${label}-P${side+1}.cpuprofile`),JSON.stringify(result.profile));}
- const results=await Promise.all(pages.map(p=>p.evaluate(async release=>{
+ const results=await Promise.all(pages.map(p=>p.evaluate(async ({release,rafAnomaly})=>{
   core._th09_loop_pause(1);const gl=document.querySelector('canvas').getContext('webgl2'),ext=gl.getExtension('WEBGL_debug_renderer_info');
   const renderer=ext?gl.getParameter(ext.UNMASKED_RENDERER_WEBGL):gl.getParameter(gl.RENDERER);
   const audio={state:core.SDL3?.audioContext?.state,advancedSeconds:(core.SDL3?.audioContext?.currentTime||0)-measure.audioStart};
@@ -498,9 +531,10 @@ try {
    peers:rtcPeers,scope:'Selected ICE candidate types and channel state after measurement; no IP/SDP recorded. RTC is not automatically direct.'};
   window.networkTransportProbe?.stop('complete');
   const startupTransport=window.startupTransportProbe?.snapshot({stop:true});
-  return {stats:readStats(),hash:core._th09_network_hash()>>>0,audited,route:window.__eaglerNetplayTransport,routeEvidence,renderer,audio,measure,impairment,memoryBytes:core.HEAPU8.length,startupTransport,
-   audioOutput:window.audioOutputProbe?.snapshot(),responsiveness:window.responsivenessProbe?.snapshot(),rafDiagnostics:window.rafDiagnosticProbe?.snapshot(),networkTransport:window.networkTransportProbe?.snapshot(),liveCallbackCosts:window.liveCallbackCostProbe?.snapshot(),lifecycle:window.gameLifecycle,sdl,confirmedHashes:window.confirmedHashTrace||[]};
- },release)));
+  const finalStats=readStats();
+  return {stats:finalStats,hash:core._th09_network_hash()>>>0,audited,route:window.__eaglerNetplayTransport,routeEvidence,renderer,audio,measure,impairment,memoryBytes:core.HEAPU8.length,startupTransport,
+   audioOutput:window.audioOutputProbe?.snapshot(),responsiveness:window.responsivenessProbe?.snapshot(),rafDiagnostics:window.rafDiagnosticProbe?.snapshot(),rafAnomaly:rafAnomaly?window.rafAnomalyProbe?.snapshot({final:true,stats:finalStats}):undefined,networkTransport:window.networkTransportProbe?.snapshot(),liveCallbackCosts:window.liveCallbackCostProbe?.snapshot(),lifecycle:window.gameLifecycle,sdl,confirmedHashes:window.confirmedHashTrace||[]};
+ },{release,rafAnomaly})));
  retainedResults=results;hostProbe?.mark('browser-sample-capture-complete');
  if(schedulerTrace)await finishSchedulerTrace('capture-stop');
  if(headedControl)await Promise.all(pages.map((page,side)=>recordHeadedWindow(page,sessions[side],side,'measurement-complete')));
@@ -536,6 +570,7 @@ try {
  if(audioOutput)for(const r of results){assert.ok(r.audioOutput?.blocks.length>100&&r.audioOutput.nonzeroBlocks>100,'Actual audio output not exercised');assert.ok(!r.audioOutput.overflow);}
  if(responsiveness)for(const r of results){assert.ok(r.responsiveness?.valid,JSON.stringify(r.responsiveness?.errors));assert.ok(r.responsiveness.counts.planned>10&&r.responsiveness.counts.captured>10,'Independent input response was not exercised');}
  if(rafDiagnostics)for(const r of results){assert.ok(r.rafDiagnostics?.valid,JSON.stringify(r.rafDiagnostics?.hookErrors));assert.ok(r.rafDiagnostics.counts.gameFrames>100&&r.rafDiagnostics.callbacks.some(c=>c.game),'Game RAF diagnostics were not exercised');}
+ if(rafAnomaly)for(const r of results)assert.ok(r.rafAnomaly?.valid,JSON.stringify(r.rafAnomaly?.errors));
  if(networkTrace)for(const r of results){assert.ok(r.networkTransport?.valid,JSON.stringify({errors:r.networkTransport?.errors,overflow:r.networkTransport?.overflow,identity:r.networkTransport?.identity}));assert.ok(r.networkTransport.coverage.exercised,'Network transport diagnostics were not exercised');}
  if(liveCost)for(const r of results){assert.ok(r.liveCallbackCosts?.valid,JSON.stringify(r.liveCallbackCosts?.errors));assert.ok(r.liveCallbackCosts.frames.length>100,'Live callback costs not exercised');}
  if(burstFor&&burstDelay){
@@ -548,7 +583,9 @@ try {
  if(inputMode==='tape')for(const r of results){assert.ok(r.measure.inputTape.length>=limit);r.inputTapeSha256=createHash('sha256').update(JSON.stringify(r.measure.inputTape.slice(0,limit))).digest('hex');}
  if(!release)assert.ok(finalComparable,'Diagnostic frame limit did not reach a fully confirmed common endpoint');
  if(finalComparable){assert.equal(results[0].hash,results[1].hash);if(!release)assert.deepEqual(results[0].audited,results[1].audited);}
- const summary=results.map(r=>{
+ // Preserve the historical frame-filtered calculation for report consumers and
+ // exact comparison with frozen reports; it is not the corrected window.
+ const legacySummary=results.map(r=>{
   const samples=r.measure.samples.filter(s=>s[3]>=180&&s[3]<limit),gaps=[],completionGaps=[],rafGaps=[],effectiveGaps=[];let prior,effectivePrior;
   for(let i=1;i<samples.length;++i)if(samples[i][13]!==samples[i-1][13])rafGaps.push(samples[i][13]-samples[i-1][13]);
   for(const s of samples)if(!prior||s[11]!==prior[11]){if(prior){gaps.push(s[13]-prior[13]);completionGaps.push(s[0]-prior[0]);}prior=s;}
@@ -558,22 +595,28 @@ try {
   r.sdlMeasured=Object.fromEntries(fields.map((name,i)=>[name,r.sdl[i]-r.measure.sdlStart[i]]));
   return {logicHz:(last[3]-first[3])*1000/elapsed,elapsedMs:elapsed,firstFrame:first[3],lastFrame:last[3],callbacks:samples.length,waitCallbacks:samples.filter(s=>s[1]===2).length,corrections:last[5]-first[5],resimulated:last[6]-first[6],captures:last[7]-first[7],callbackWorkMs:distribution(samples.map(s=>s[2])),presentationGapMs:distribution(gaps),effectivePresentationGapMs:distribution(effectiveGaps),callbackCompletionGapMs:distribution(completionGaps),rafGapMs:distribution(rafGaps),plannedDelayMs:distribution(r.impairment.planned),deliveredDelayMs:distribution(r.impairment.delivered),scenes:[...new Set(samples.map(s=>s[12]))]};
  });
+ const summary=results.map(r=>summarizeSmoothnessWindow(r,{startFrame:180,endFrame:limit}));
+ const summaryMethod={schema:SMOOTHNESS_WINDOW_SCHEMA,primary:'summary: continuous first-cross frontier window; see each window for completeness, terminal closure and all startup/tail costs',legacy:'legacySummary: original next/cursor frame-filtered calculation, retained verbatim; may splice non-adjacent samples after rollback'};
  assert.equal(sha(wasmPath),identity.wasm,'WASM changed during run');assert.equal(sha(relayPath),identity.relay);
+ assert.equal(sha(fileURLToPath(new URL('./smoothness-window.mjs',import.meta.url))),identity.smoothnessWindow,'Smoothness window helper changed during run');
+ if(rafAnomaly){identity.rafAnomalyProbeAfter=sha(fileURLToPath(new URL('./raf-anomaly-probe.mjs',import.meta.url)));assert.equal(identity.rafAnomalyProbeAfter,identity.rafAnomalyProbe,'RAF anomaly helper changed during run');}
  assert.equal(sha(resolve(root,'tests/browser/presentation.html')),identity.presentationHarness,'Presentation fixture changed during run');
  hostProbe?.mark('success-report-ready');const hostLoadSnapshot=await hostProbe?.stop();
- const report={passed:true,scope:'Two separate desktop Chromium processes; native GPU; real '+(fallback?'WebSocket relay':'RTC')+' with '+(impairmentSite==='client'?'seeded application-send impairment on input and repair lanes':impairmentSite==='relay'?'synchronous client send and seeded relay-process input impairment; burst anchored to relay first input receive':'synchronous client send; no injected send timers')+'; '+(inputMode==='tape'?'wire-verified frame-indexed hosted-key tape':'wall-clock synthetic keyboard')+(audioOutput?'; sampled SDL output blocks, not speaker/acoustic acceptance':'; audio clock only, not acoustic acceptance'),presentationMeasurement:'RAF timestamps of callbacks with a new renderer submission; NOT physical scanout. Completion gaps are reported separately because varying callback work is not itself a missed vsync.',identity,parameters,browsers:browsers.map(b=>b.version()),sameFrame,finalComparable,confirmedChecks,summary,results,errors,relayLog,relayTransport:relayTraceSnapshot,hostLoad:hostLoadSnapshot};
+ const report={passed:true,scope:'Two separate desktop Chromium processes; native GPU; real '+(fallback?'WebSocket relay':'RTC')+' with '+(impairmentSite==='client'?'seeded application-send impairment on input and repair lanes':impairmentSite==='relay'?'synchronous client send and seeded relay-process input impairment; burst anchored to relay first input receive':'synchronous client send; no injected send timers')+'; '+(inputMode==='tape'?'wire-verified frame-indexed hosted-key tape':'wall-clock synthetic keyboard')+(audioOutput?'; sampled SDL output blocks, not speaker/acoustic acceptance':'; audio clock only, not acoustic acceptance'),presentationMeasurement:'RAF timestamps of callbacks with a new renderer submission; NOT physical scanout. Completion gaps are reported separately because varying callback work is not itself a missed vsync.',identity,parameters,browsers:browsers.map(b=>b.version()),sameFrame,finalComparable,confirmedChecks,summaryMethod,summary,legacySummary,results,errors,relayLog,relayTransport:relayTraceSnapshot,hostLoad:hostLoadSnapshot};
  if(headedControl){headedControlEvidence.identityVerified=headedControlEvidence.launches.length===2&&headedControlEvidence.launches.every(row=>row.verified);report.headedControl=headedControlEvidence;}
  if(schedulerTrace)report.chromeSchedulerTrace=schedulerTraceEvidence;
+ if(rafAnomaly)report.rafAnomalyNodePolls=rafAnomalyNodePolls;
  writeFileSync(resolve(out,label+'-report.json'),JSON.stringify(report,null,2));console.log(JSON.stringify({identity,parameters,sameFrame,summary,hashes:results.map(r=>r.hash)}));
 }catch(error){
  hostProbe?.mark('failure-observed');
  if(schedulerTrace)try{await finishSchedulerTrace('failure');}catch{schedulerTraceEvidence??=[{status:'finalization-failed',collectionValid:false}];}
  const hostLoadSnapshot=await hostProbe?.stop();
  if(diagnosticRelay)try{relayTraceSnapshot=await diagnosticRelay.snapshot({stop:true});}catch(error){relayTraceError=String(error.stack||error);}
- const partial=await Promise.all(pages.map(async p=>{try{return await p.evaluate(()=>{window.responsivenessProbe?.stop();window.networkTransportProbe?.stop('failure');return {startupTransport:window.startupTransportProbe?.snapshot({stop:true}),measure:window.measure,impairment:window.impairment,stats:window.readStats?.(),audioOutput:window.audioOutputProbe?.snapshot(),responsiveness:window.responsivenessProbe?.snapshot(),rafDiagnostics:window.rafDiagnosticProbe?.snapshot(),networkTransport:window.networkTransportProbe?.snapshot(),liveCallbackCosts:window.liveCallbackCostProbe?.snapshot(),lifecycle:window.gameLifecycle,confirmedHashes:window.confirmedHashTrace};});}catch{return null;}}));
+ const partial=await Promise.all(pages.map(async p=>{try{return await p.evaluate(enabled=>{window.responsivenessProbe?.stop();window.networkTransportProbe?.stop('failure');const stats=window.readStats?.();return {startupTransport:window.startupTransportProbe?.snapshot({stop:true}),measure:window.measure,impairment:window.impairment,stats,audioOutput:window.audioOutputProbe?.snapshot(),responsiveness:window.responsivenessProbe?.snapshot(),rafDiagnostics:window.rafDiagnosticProbe?.snapshot(),rafAnomaly:enabled?window.rafAnomalyProbe?.snapshot({final:true,stats}):undefined,networkTransport:window.networkTransportProbe?.snapshot(),liveCallbackCosts:window.liveCallbackCostProbe?.snapshot(),lifecycle:window.gameLifecycle,confirmedHashes:window.confirmedHashTrace};},rafAnomaly);}catch{return null;}}));
  if(headedControl)await Promise.all(pages.map((page,side)=>recordHeadedWindow(page,sessions[side],side,'failure-observed')));
  if(headedControl)headedControlEvidence.identityVerified=headedControlEvidence.launches.length===2&&headedControlEvidence.launches.every(row=>row.verified);
- writeFileSync(resolve(out,label+'-failure.json'),JSON.stringify({error:error.stack,identity,parameters,partial,results:retainedResults,errors,relayLog,relayTransport:relayTraceSnapshot,relayTraceError,hostLoad:hostLoadSnapshot,headedControl:headedControlEvidence,chromeSchedulerTrace:schedulerTraceEvidence},null,2));throw error;
+ if(rafAnomaly)try{identity.rafAnomalyProbeAfter=sha(fileURLToPath(new URL('./raf-anomaly-probe.mjs',import.meta.url)));}catch{identity.rafAnomalyProbeAfter=null;}
+ writeFileSync(resolve(out,label+'-failure.json'),JSON.stringify({error:error.stack,identity,parameters,partial,results:retainedResults,errors,relayLog,relayTransport:relayTraceSnapshot,relayTraceError,hostLoad:hostLoadSnapshot,headedControl:headedControlEvidence,chromeSchedulerTrace:schedulerTraceEvidence,rafAnomalyNodePolls},null,2));throw error;
 }finally{
  if(schedulerTrace)await finishSchedulerTrace('finally').catch(()=>{});
  await hostProbe?.stop();
