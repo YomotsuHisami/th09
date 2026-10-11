@@ -40,6 +40,8 @@ const suites={
   adonis:[resolve(root,'cpp/multiplayer/RollbackSession.cpp'),
     ...['NetplayCore','NetplayProtocol','NetplaySession','SessionChannel'].map(n=>resolve(common,'src/netplay',n+'.cpp'))],
   'dynamic-state':[resolve(root,'cpp/multiplayer/DynamicState.cpp')],
+  'enemy-capture':[resolve(root,'cpp/multiplayer/WorldState.cpp'),resolve(root,'cpp/multiplayer/DynamicState.cpp'),
+    resolve(common,'src/netplay/RollbackJournal.cpp')],
   'bullet-snapshot':[
     ...['BulletManager','BulletExtras','BulletPattern','Rng','Timer','GameMath'].map(n=>resolve(root,'cpp/game',n+'.cpp')),
     resolve(common,'src/netplay/RollbackJournal.cpp')],

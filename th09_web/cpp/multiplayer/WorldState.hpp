@@ -71,6 +71,15 @@ public:
     }
     void Text(std::string& value) { undo.emplace_back([&value,saved=value]{value=saved;}); }
 private:
+    // The two versus enemy pools have stable slot identity for a checkpoint.
+    // Unknown owners retain the original pointer-list fallback in BeforeEnemy.
+    // This index owns only first-write metadata, never ECL state or pointers.
+    friend struct WorldStateEnemyCaptureTest;
+    static constexpr std::size_t EnemySlotsPerRange=EnemyManager::capacity+2;
+    struct EnemyRange { EclVm* prototype=nullptr;EclVm* pool=nullptr; };
+    std::array<EnemyRange,2> enemyRanges{};
+    std::bitset<2*EnemySlotsPerRange> enemySaved;
+    void ResetEnemyCapture(){enemyCount=0;enemyRanges={};enemySaved.reset();}
     // These were the journal's limits before VM bytes moved into pages. Keep
     // one combined first-write budget; owning-container accounting is unchanged.
     static constexpr std::size_t FirstWriteByteBudget=32*1024*1024,FirstWriteBlockBudget=8192;

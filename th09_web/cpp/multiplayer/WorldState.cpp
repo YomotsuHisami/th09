@@ -16,7 +16,21 @@ bool WorldState::JournalRangeDisjoint(const void* data,std::size_t size) const {
 }
 #endif
 void WorldState::BeforeEnemy(EclVm& e){
-    for(std::size_t i=0;i<enemyCount;++i)if(enemies[i].first==&e)return;
+    std::size_t slot=enemySaved.size();
+    for(std::size_t i=0;i<enemyRanges.size();++i){
+        const auto& range=enemyRanges[i];
+        if(range.prototype==&e){slot=i*EnemySlotsPerRange;break;}
+        if(!range.pool)continue;
+        const auto base=reinterpret_cast<std::uintptr_t>(range.pool);
+        const auto address=reinterpret_cast<std::uintptr_t>(&e);
+        if(address>=base&&address-base<(EnemySlotsPerRange-1)*sizeof(EclVm)&&
+            (address-base)%sizeof(EclVm)==0){
+            slot=i*EnemySlotsPerRange+1+(address-base)/sizeof(EclVm);break;
+        }
+    }
+    if(slot<enemySaved.size()){
+        if(enemySaved[slot])return;enemySaved.set(slot);
+    }else for(std::size_t i=0;i<enemyCount;++i)if(enemies[i].first==&e)return;
     if(enemyCount==enemies.size())enemies.emplace_back();
     auto& saved=enemies[enemyCount++];saved.first=&e;
     good=saved.second.Save(e)&&good;if(hashEnabled)HashPart("dynamic enemy",saved.second.Fingerprint(e));ownedBytes+=saved.second.Bytes();
@@ -125,7 +139,7 @@ void WorldState::Recording(ReplayArchive& x) {
     }
 }
 bool WorldState::Save(GameSession& s) {
-    Unbind();hashParts.clear();digest={};if(journal.IsFrameOpen())journal.EndFrame();journal.DiscardBefore(1);undo.clear();enemyCount=effectCount=attackCount=0;effectRangeCount=effectSlots=0;effectSaved.reset();attackSaved.reset();ownedBytes=visualFirstWriteBlocks=0;good=journal.BeginFrame(0);
+    Unbind();hashParts.clear();digest={};if(journal.IsFrameOpen())journal.EndFrame();journal.DiscardBefore(1);undo.clear();ResetEnemyCapture();effectCount=attackCount=0;effectRangeCount=effectSlots=0;effectSaved.reset();attackSaved.reset();ownedBytes=visualFirstWriteBlocks=0;good=journal.BeginFrame(0);
     bulletRangeCount=0;
     // This adapter is specifically the stable live two-human versus world.
     if(!s.world||s.is_replay||s.world->rules.mode!=GameMode::versus)return good=false;
@@ -136,6 +150,12 @@ bool WorldState::Save(GameSession& s) {
     auto& r=w.rules;NamedFields("r.progress,r.mode,r.scores,r.attack_levels",r.progress,r.mode,r.scores,r.attack_levels);Vector(w.screen_effects.effects);
     auto& ss=w.scene_services();NamedFields("ss.game_flags,ss.wins_required,ss.wins,ss.starting_extra_lives,ss.opponent_character,ss.music_track,ss.cpu_level,ss.route,ss.players,ss.geometry",ss.game_flags,ss.wins_required,ss.wins,ss.starting_extra_lives,ss.opponent_character,ss.music_track,ss.cpu_level,ss.route,ss.players,ss.geometry);
     auto& b=*w.battle;NamedFields("b.state,b.patterns",b.state,b.patterns);Text(b.error);
+    // Register both pools before capturing either side: a boss alias can point
+    // across them without first being saved through the unknown-owner path.
+    for(std::size_t side=0;side<enemyRanges.size();++side){
+        auto& manager=*b.fields[side].enemies;
+        enemyRanges[side]={&manager.prototype,manager.enemies.data()};
+    }
     for(auto& f:b.fields){
         NamedFields("f.script,f.enemy_player,f.focus_aura,f.capture_effect,f.shield,f.targeted_enemy,f.cpu_level,f.spells,f.bosses,f.counters",f.script,f.enemy_player,f.focus_aura,f.capture_effect,f.shield,f.targeted_enemy,f.cpu_level,f.spells,f.bosses,f.counters);
         PlayerState(*f.player);Enemy(*f.enemies);Effects(*f.effects);
