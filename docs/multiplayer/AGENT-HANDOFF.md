@@ -1,6 +1,95 @@
 # TH09 rollback handoff for a new agent
 
-> **2026-10-10 scheduler and relay125 continuation (current):** Continue in
+> **2026-10-11 enemy index, continuous windows and information-budget results (current):**
+> Continue in `D:/workspace/eagler/worktrees/th09-rollback-4x`, branch
+> `experiment/rollback-4x`. Read the current top of
+> [rollback-chain-work.md](rollback-chain-work.md), then the enemy-index series,
+> response, E1 gap, burst gap and information-pacing-shadow results beside it.
+> The user's priorities remain D=0 local prediction, continuous new game states,
+> good CPU4 behavior and smooth information-limited slowdown; sudden freezes are
+> unacceptable. Keep TH06MP/TH07MP as useful references and retain shared-host
+> load observations without attributing every adverse result to the host.
+>
+> Local commits: `d6ba14f00e317c6400fee0e7316094cf506d859e` implements fixed-pool
+> enemy first-write indexing; `0cdea91f6dbe56a8cf208915f222fc8074b7e980` saves
+> the continuous-window/anomaly/deep/ABBA/response harness and evidence;
+> `1cc2cbd7bd13b0f9e7394a8e670a27c07940e13f` saves the executed shadow model.
+> The following documentation commit records this handoff and gap diagnosis.
+> Candidate common stays at isolated `512353cab9eaa4f6744f867b0eb07c61ee7f2b0e`.
+> Preserve B scalar release WASM `47367732b9bc4972d8adf2ffc49ace32cf9eca4a3868ff73c9c6494a0de4df97`
+> and E scalar release `766dc277b15d86a97d4bc3b38e2a08a9b52a5786d74c817763bc185216673577`.
+> Only WorldState.cpp/.hpp differ among 275 build source/header inputs. SIMD
+> remains OFF. Do not silently replace frozen builds or analysis dependencies.
+>
+> Index correctness: components-01 retains the old 265-owner relocation failure
+> in both paths; components-03 passes 118 cases, including 9 record slots used
+> 90 times. These are not 118 full GameSession Save integrations. Deep8 CPU4,
+> D0, 1800 frames passes all three world hashes, 48 state fields, framebuffer
+> and Replay. It runs manual native calls for three worlds sequentially in one
+> throttled renderer, not real rAF/RTC/FPS. The 466.467 s whole-run time cannot
+> be converted into game FPS. Long native calls 148.585/107.130 ms remain;
+> about 64% of continuous native time is continued replay without new correction.
+>
+> Frozen release B1/E1/E2/B2 all completed in order with CPU[1,4], headed GPU,
+> D0, 1800 identical tape frames and each-way relay39+/-5. Fifteen confirmed
+> checkpoints and input identities agree. P2 logical Hz=59.444/59.526/59.760/59.489;
+> post-native new-state max=62.790/98.075/56.610/61.400 ms. RAF timestamp maxima
+> are different: 54.585/85.035/48.560/54.195 ms. Baseline self-drift prevents a
+> stable speedup claim. Helper schema continuous-prediction-frontier-v1 uses
+> first F=max(next,replayEnd) crossings [180,1800), keeps every callback, closes
+> the end boundary and retains startup/tail. Capture is not completion; neither
+> logical Hz nor renderer submissions prove physical display FPS.
+>
+> E1 has actual completion gaps 98.075 and 84.660 ms with no correction/resim,
+> identified eligible RAF waits 73.710/62.920 ms and overlapping independent
+> relay send API brackets 57.783/63.237 ms. Original RAF 85.035 corresponds to
+> only 23.550 ms completion gap at other endpoints; retain all three intervals.
+> The new E burst response passes all 125 intents per side (body 110/111), P2
+> planned-input-to-new-state p95/max 38.500/49.840 ms, but max completion gap
+> remains 103.660 ms. That event is 5.926 s after burst end and 5.766 s after the
+> final burst send: no P2 correction/resim/wait, native 10.210 ms, eligible RAF
+> wait 93.080 ms and overlapping relay send brackets 47.692/44.955 ms. P1 has
+> separate callback gaps and one zero-resim wait; do not merge peer counters.
+> Get-Process query brackets do not overlap these E1/burst long spans. Coarse
+> CPU percentages and timeOrigin alignment cannot establish OS/relay causality.
+>
+> Overall smoothness is NOT accepted; the older active 1.4 s RAF stall remains
+> unresolved. RAF_ANOMALY=1 is a bounded 250 ms evidence trigger, not an acceptance
+> threshold. Eight ABBA peers have no episodes; E1 P1 coverage is incomplete by
+> one request. New burst P1 anomaly coverage is also incomplete. Full samples
+> and RAF diagnostics are separate evidence. Preserve all failed attempts.
+>
+> Information-budget shadow formally executed once; 12 model contracts and raw
+> identities pass. All-report first warnings 99 = 82 unnecessary-warning proxies
+> + 17 later-contaminated unknowns; body 97 = 81 + 16. None identifies a qualified
+> opportunity, but an independent all-point/no-warning-gap analysis finds one
+> missed model opportunity per burst peer. Both have enough history; positive
+> lead lower bounds only 5.045/2.040 ms. Do not claim zero global opportunities,
+> counterfactual FPS, or that history was insufficient. Relay125 is mostly
+> already braking. Keep this rule offline; do not retune the same raw and
+> overwrite evidence. Full evidence 11,695,729 B and compact summary are saved.
+>
+> Next work: distinguish producer, relay, browser queue and per-Pump native
+> acceptance using default-off O(1), bounded observations; retain actual route
+> validation for direct/relay and vary window/host/probe controls separately.
+> Node 24.13 threadCpuUsage was independently calibrated: waits report 0 CPU,
+> but 50 ms busy brackets report 62/63 ms CPU, so retain coarse raw values and
+> never derive exact wall-minus-CPU waiting. It is not yet in the relay probe.
+> RestoreChain VM-copy coalescing is a concrete design only, not implemented:
+> any AfterRestore or nonempty polymorphic AttackState causes full-chain old
+> path fallback. Continued replay costs still require separate optimization.
+> TH09 cp3 needs cross-frame journal/owning work; do not merely delete Saves.
+>
+> All browser/build/model commands are finished; root serializes new heavy work.
+> All environment operations remain nig-only. Local commits only, no push,
+> merge or deploy. Do not touch canonical repositories or the unrelated dirty
+> common prototype. Exact analyzed bytes retain documented EOF-only style
+> findings; do not silently rewrite frozen SHA inputs to normalize whitespace.
+> Final verification checks all 26 protected source/evidence/build identities
+> and the clean isolated common pin after the first three commits; all agree.
+> Earlier snapshots below are historical and keep their original boundaries.
+
+> **2026-10-10 scheduler and relay125 continuation (preceding snapshot):** Continue in
 > `D:/workspace/eagler/worktrees/th09-rollback-4x`, branch `experiment/rollback-4x`.
 > Read [rollback-chain-work.md](rollback-chain-work.md), the Chrome scheduler,
 > relay125 response/transport, and network-pacing contract evidence beside it.

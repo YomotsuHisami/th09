@@ -4,7 +4,177 @@
 
 目标是保留 D=0 的本地预测和完整回滚，让玩家持续看到新的游戏状态。网络信息不足时允许渐进降速；秒级静止与突然大卡顿仍是未通过项。TH06MP / TH07MP 的成果继续作为参考。环境操作均通过 nig；本轮已保存诊断基线 `65e5ada`、输入发送合并 `17077dd79291a8c157253b0ea1cf3d11658536e9` 及其 common 提交 `512353cab9eaa4f6744f867b0eb07c61ee7f2b0e`，均为本地提交。
 
-## 当前结论
+## 2026-10-11：连续窗口、敌人快照索引与轻量停顿观察
+
+本轮开始时，实际工作树仍在 `5d4b7f0a1cc047143e3f5da5ed3749ad5af9b897`，没有发现上一份报告之后的新运行结果。随后落实了以下改动，并完成深 8 CPU4 确定性运行、发布版 B/E/E/B 四组对照及一次独立墙钟输入的 burst 响应运行。确定性通过；四组都接近 60 Hz，但未证明稳定代码收益。E1 最大的新状态完成观测间隙为 98.075 ms，新 burst 为 103.660 ms；两者与 rAF timestamp 的最大间隔分别报告。旧秒级 rAF 停顿仍未解决，整体流畅性尚未验收。
+
+### 已落地的改动
+
+- `smoothness-window.mjs` 以预测前沿第一次跨过 180 和结束帧的边界，取连续 `[s,e)` 调用区间，并单独闭合终点的新状态间隔。完整保留 startup、tail、跨边界间隔和不完整窗口；旧 frame-filter 结果保留为 `legacySummary`。前沿来自 `max(next,replayEnd)`，不是可能提前一帧的本地 capture。10 项合同检查及冻结 relay125 原始样本复算通过，旧 raw 未改写。证据：[rollback-continuous-window-evidence.json](rollback-continuous-window-evidence.json)。
+- `WorldState::BeforeEnemy` 对双方固定敌人池、各自原型和哨兵建立固定槽身份与 first-write 位图，已知所有者只需检查最多两个范围。未知所有者仍使用原指针列表回退。保存完整 ECL 拥有状态、顺序、hash、内存预算、D=0 输入、历史窗口和恢复预算均保持原规则。发布版与 B 的 275 个源/头输入中只有 `WorldState.cpp/.hpp` 不同，其他 273 个、全部编译选项、loader 及导入/导出接口一致。
+- 新增 opt-in `RAF_ANOMALY=1`，复用现有 100 ms 状态轮询，保存有界前史、同一 pending rAF 身份、恢复/取消状态、现有输入队列及收发状态。没有新增游戏 tick、pump 或页面 timer。13 项异常探针合同、3 项原 scheduler finalizer 合同通过。250 ms 是取证触发值，不是流畅验收线；无 episode 也不能证明旧秒卡已修好。说明：[rollback-raf-anomaly-probe.md](rollback-raf-anomaly-probe.md)。
+- 使用冻结 relay39 的 P1 q704 / P2 q632 历史字段，离线重放已识别 1429.935 / 1409.780 ms 的等待及自然恢复，也识别了两次 poll 之间已经结束的等待。这是历史字段合同验证，未产生新的浏览器复现；从事件附近开始导致的旧请求缺项及 `coverageComplete=false` 均保留。证据：[rollback-raf-anomaly-historical-replay.json](rollback-raf-anomaly-historical-replay.json)。
+
+### 已完成的构建与组件检查
+
+| 项目 | 实际结果 | 限制 |
+|---|---|---|
+| enemy-index components-01 | FAIL，约 14.055 s，原始日志保留 | 同时保存 265 个所有者触发旧容器扩容后内部指针失效；新位图和原线性路径均有相同边界 |
+| components-02 | PASS，约 18.972 s | 保留首版混合 unknown-owner 轮次未启用 hash 的覆盖限制 |
+| components-03 | PASS，约 18.425 s | 补齐混合 owner/hash 覆盖；24 个捕获用例、90 个历史槽复用用例、2 个非法 context、2 个旧扩容边界，共 118 项，不能称为 118 次全部成功恢复 |
+| 新标量发布版 | PASS，约 69.939 s；Wasm `766dc277b15d86a97d4bc3b38e2a08a9b52a5786d74c817763bc185216673577`，2,827,974 B | 比 B 增加 345 B；构建和身份隔离不是速度收益 |
+| 新标量诊断版 | PASS，约 191.281 s；Wasm `59364fa88a9a23913fe2d808ae6e303790dcb1c1533f5e4d4e5893d14fde4877`，3,155,589 B | 用于深恢复正确性和调用压力，不能拿诊断构建直接替代发布版 FPS |
+
+组件证据保留完整 owning-state、内部 context 指针、保存顺序、hash、字节数、9 个历史槽共 90 次使用/重用及旧边界双路径结果：[rollback-enemy-index-evidence.json](rollback-enemy-index-evidence.json)。正常的 260 个固定所有者与少量额外所有者分别验证；本补丁没有改变旧容器扩容语义。组件实际调用生产 BeforeEnemy / Restore / Seal，但由 friend Begin 重置并安装池范围，不构造完整 GameSession，因此 118 例不是 118 次完整游戏 Save。完整 Save 的双池提前注册及 observer 生命周期另由源码调用链审阅和深 8 集成运行支撑；最终独立源码复核未发现阻断本轮本地提交的新 bug。
+
+### 实际运行安排与解释边界
+
+已在发布对照之前冻结 [rollback-enemy-index-validation-plan.json](rollback-enemy-index-validation-plan.json)：深 8 帧、1800 帧、D=0、CPU4、持续交替输入；随后按 B/E/E/B 固定顺序运行 1800 帧、每方向 relay39±5 ms、CPU[1,4]、headed、同一输入带和轻量观察。计划另保留一次独立墙钟输入的 burst 响应运行。全部重任务串行，编译/宿主噪声和不利结果保留。
+
+`peer-browser.mjs` 新增 CPU4 配置、构建/输入身份、宿主观察、失败快照和独立 cleanup 记录。CPU4/depth8 的有限调用上限在运行前声明为 19,800，以容纳每次预算只完成一个历史 tick 的情况；不改变生产预测深度。它在同一个限速 renderer 内顺序运行两端和精确输入参考 world，手动调用 native tick，因此只验证实际恢复、完整状态和调用成本，不能声称 4× 下的实际 rAF 呈现流畅性已经通过。
+
+深 8 原运行 `rollback4x-enemy-index-deep8-cpu4-01` 曾有一次 nig 轮询入口 HTTP 404；随后的只读访问及原命令轮询恢复，最终原命令正常完成，未重启。连接错误与游戏测试结果分开记录。
+
+### 深 8 CPU4：正确性通过，长调用仍保留
+
+该运行耗时 466.467 s，是两个 peer 与第三参考 world 的整套手动诊断耗时，不能换算成实际游戏 FPS。双方 next、confirmed、captures 均达到 1800；各有 1798 次纠错、14352 / 14359 帧重演。三 world 的 hash 均为 3545558762，48 项状态审计、最终 framebuffer 和 1986 B Replay 全部一致，输入身份前后稳定、cleanup 完整且没有错误。
+
+| 连续调用指标 | P1 | P2 |
+|---|---:|---:|
+| 首次跨 180 到首次跨 1800，含两个边界 | 10042 次 | 10039 次 |
+| 主区间单次 native 调用 p99 | 49.035 ms | 48.350 ms |
+| 主区间及全部确认尾部最大调用 | 148.585 ms | 107.130 ms |
+| 首次到 1800 后的确认尾部 | 7 次 / 100.460 ms | 53 次 / 361.730 ms |
+| 两侧合计峰值活跃 bullet / enemy | 383 / 40 | 383 / 40 |
+
+最大长调用并非都在新纠错入口：P1 的 148.585 ms 调用没有新 correction，只续跑 3 个 replay tick；P2 另一次 105.055 ms 调用也没有新 correction，只续跑 7 个 replay tick。连续区间连同确认尾部，无新纠错的续跑重演约占 native 总时间的 64%；纠错入口约 27%，但其内部仍混有重演，不能视为纯 Restore。因此跨快照恢复去重只是候选方向，不能覆盖本次全部长尾。第一条 0→1 的 294.485 ms 调用保留在 startup，没有用 warmup 名义删掉。
+
+宿主 24 个逻辑 CPU 的整体 busy 加权均值为 37.33%，p99 为 73.93%，峰值 93.63%。同 PID/name 的相邻成功观察中记录到 clang++ 10.172、java 261.797、未标记 node 90.969 CPU 秒的正增量；首次看到的 lifetime CPU 已剔除。它支持运行时有其他 CPU 活动，不能证明具体编译任务，更不能将某次 100 ms 调用归因给该活动。诊断 samples 没有逐调用绝对时钟，相关性边界明确保留。
+
+证据：[rollback-enemy-index-deep8-evidence.json](rollback-enemy-index-deep8-evidence.json)，SHA `536eeb1702632508dd9e6cb1ab11ce0f6f406317919c0abe14bb052d47e497d1`；raw 4,663,577 B，SHA `cbc6492eb54c225eaeefa31b428ac537eff7382e348c957f368b4b8207eab77f`。
+
+### 发布版 B/E/E/B：接近 60 Hz，不宣称稳定提速
+
+四组均使用冻结 harness `dde1d2e8f744b33e2eb56337ada81524083f334cd5b897c1dbb57bbf17a74fec`、连续前沿窗口、D=0、1800 帧相同输入带、每向 39±5 ms 独立中继、headed / native GPU、CPU[1,4]、音频和轻量 rAF/host/relay 观察。B 为原输入合并标量 Wasm `47367732…`，E 只增加 enemy owner 位图索引，为 `766dc277…`。按预先声明的 B1/E1/E2/B2 顺序执行，没有重跑或删除不利样本。每组 15 个确认状态检查均通过，四组之间的对应 hash 与双方各自的 1800 帧输入带也一致。
+
+| P2，4× CPU | 连续逻辑推进 Hz | 新状态 rAF timestamp 间隔 p99 / max | 新状态完成观测间隔 p99 / max | 单帧前进、无恢复计数变化的 callback p50 / p99 | 所有 callback 最大 native 耗时 | 纠错 / 重演 |
+|---|---:|---:|---:|---:|---:|---:|
+| B1 | 59.444 | 24.235 / 54.585 ms | 29.470 / 62.790 ms | 4.230 / 8.955 ms | 16.110 ms | 118 / 295 |
+| E1 | 59.526 | 24.245 / 85.035 ms | 28.430 / **98.075 ms** | 4.065 / 9.495 ms | **23.985 ms** | 121 / 303 |
+| E2 | 59.760 | 24.195 / 48.560 ms | 26.470 / 56.610 ms | 3.220 / 7.120 ms | 13.575 ms | 143 / 421 |
+| B2 | 59.489 | 24.250 / 54.195 ms | 28.125 / 61.400 ms | 3.665 / 7.925 ms | 13.400 ms | 120 / 328 |
+
+逻辑推进 Hz 是前沿的累计帧数除以连续观测时间，不是 unique 新状态提交次数，也不是物理显示 FPS。两个间隔列都要求完成新的预测前沿并增加 renderer submission；rAF timestamp 来自浏览器传入的时间戳，完成观测来自执行 native 与 play.frame 后的页面 performance.now。后者更直接描述这些观测端点之间没有完成新状态的时间，但仍不是 GPU 完成、像素变化或 scanout 的测量。两列最大值可能对应不同端点，不能交换使用。
+
+单帧前进一列是结构分类：每个正文 callback 只归入 unknown、无新前沿、单帧前进、多帧前进或恢复混合类之一；第一条正文样本保持 unknown，恢复计数变化优先。分类数量及耗时总和均核对守恒。它仍包含整个 native callback 的工作，不能视为纯 Tick。原所有 callback 的 p50 约 0.005–0.010 ms，主要受大量未推进前沿的回调影响，不能当作正常模拟一帧只需该时间。
+
+E1 相对 B1 的 P2 单帧类 p50 降低约 3.90%，E2 相对 B2 降低约 12.14%；但不改代码的 B2 相对 B1 自身已降低约 13.36%，E1 的单帧类 p99、恢复混合类 p99 和最大新状态间隙反而更高。E2 的重演量还多于 B2。两次/构建的实景结果不足以将这些差异稳定归因给索引改动，不能合并百分位或以平均 Hz 掩盖长尾。所有四组的 host 观察及真实纠错量保留。
+
+八个 peer 都没有记录到满足条件的 250 ms rAF episode。E1 P1 的探针跳过了 1 条历史 request，故 `coverageComplete=false`；其余七个为 true，所有状态都保留。无 episode 不等于没有 25–100 ms 间隙，也不证明旧 1.4 s 停顿已修复。固定窗口内的新状态时间统计来自完整 samples，与该探针覆盖状态分别解释。
+
+离线分析首轮仅因漂亮缩进的 JSON 超过预设 512 KiB 而 exit 1，没有生成目标 evidence。仅改为紧凑 JSON 编码后再次分析 exit 0，全部字段、失败检查和样本范围保留，`comparisonAvailable=true` 且没有 required failure；没有重新运行浏览器。证据：[rollback-enemy-index-series-evidence.json](rollback-enemy-index-series-evidence.json)，401,235 B，SHA `cd0f1155f161bb1cf55a8401307f84c70ad5723bcc033372fa22f08a466651d1`。
+
+### E1 长间隙：完成观测、rAF 等待与独立 relay 分开定位
+
+| P2 样本 | 新状态完成观测间隔 | rAF timestamp 间隔 | 区间内 native 合计 | correction / resim |
+|---|---:|---:|---:|---:|
+| 845→846 | **98.075 ms** | 78.435 ms | 23.985 ms，一次调用 | 0 / 0 |
+| 852→855 | **84.660 ms** | 18.085 ms | 9.505 ms，三次调用 | 0 / 0 |
+| 855→857 | 23.550 ms | **85.035 ms** | 16.970 ms，两次调用 | 1 / 3 |
+
+前两个实际长段分别有已登记 game rAF request 的 73.710 / 62.920 ms eligible wait，即 parent wrapper 已退出后仍未进入下一回调。独立 relay 在相应时段分别记录 57.783 / 63.237 ms 的 send API bracket；第二段另一浏览器还同时出现 64.185 ms 的新状态观测间隙。第一段 P1 前半段仍有回调，不能说三个进程共同停了完整 73 ms。两段 P2 输入缺口都是 2→3，network scale 保持 1000、effective scale 为 997，没有制动或新增回滚计数可解释主要空档；第一段 23.985 ms native elapsed 仍是不可删去的不利成本。
+
+时间对齐使用已有各进程 performance.timeOrigin，未独立标定跨进程误差，不能利用亚毫秒先后顺序证明因果。send API elapsed 不是 CPU 用量，既不能证明 relay 发送代码本身耗尽时间，也不能证明浏览器或宿主无关。E1 没有逐包 browser receive / native acceptance trace，不能将某次 send 强行对应到下一实际输入前沿。
+
+前后 Get-Process 查询都没有与这四个 P2 / relay 长区间重叠；最近一次查询已在区间开始前约 547–739 ms 结束。CPU 采样仅有约一秒累计区间和采样点，没有查询执行的 before/after。整机 busy 约 31.9% 不足以排除单核、GPU、抢占或环境影响，但现有记录不支持直接声称“当时 Get-Process 正在执行造成停顿”。本轮没有因一个噪声样本放弃优化，也没有将未解释的停顿全部算到环境头上。
+
+两端记录的窗口位置相同，外框大于可用屏幕；visible / focus 状态和已设的后台限速参数不能证明持续非遮挡呈现。这保留为后续受控变量，未在本组中移动窗口或改变启动选项。完整逐调用解释、两次不同跨端重叠及原始列名勘误见 [rollback-enemy-index-relay39-e1-gap-analysis.md](rollback-enemy-index-relay39-e1-gap-analysis.md)；两份聚焦 JSON 保持不可变。
+
+### 新 E 发布版 burst：独立输入响应通过本次检查，仍有 103.660 ms 长间隙
+
+`rollback4x-enemy-index-burst-response-01` 使用同一冻结 E 标量发布构建，1800 帧、D=0、CPU[1,4]、独立 relay 每方向 39±5 ms，relay 首个 input 起 20 s 后在 500 ms 内额外增加 120 ms。输入由独立墙钟计划产生，不能与原 B burst 的不同输入带拼成代码速度 A/B。原运行 50.730 s 完成，源码前后稳定，15 个确认状态检查通过。
+
+| 本次连续正文指标 | P1，CPU1 | P2，CPU4 |
+|---|---:|---:|
+| 逻辑推进 Hz | 59.188 | 59.126 |
+| 新状态完成观测间隔 p99 / max | 26.010 / 72.485 ms | 28.035 / **103.660 ms** |
+| 新状态 rAF timestamp 间隔 p99 / max | 24.315 / 97.170 ms | 24.280 / 97.185 ms |
+| native callback p99 / max | 2.710 / 5.020 ms | 8.945 / 13.415 ms |
+| correction / resim | 238 / 891 | 126 / 377 |
+| 正文计划输入 / 采样并完成新状态 | 110 / 110 | **111 / 111** |
+| 计划输入→新状态观测 p95 / max | 31.040 / 36.565 ms | **38.500 / 49.840 ms** |
+
+P2 的 111 条正文输入，计划时刻→实际提交 p95 为 19.235 ms，提交→首次 native capture/serialization 观察 p95 为 14.735 ms，计划→该观察 p95 为 33.645 ms，该观察→新状态完成 p95 为 6.485 ms；完整端到端 p99 为 43.040 ms。它们是分别统计的分布，不能相加各段百分位得到端到端百分位。“首次 wire”是 native 捕获并编码之后、传输 send 之前的观察，不是硬件输入采样或远端 ACK。
+
+全程每端 125 条计划输入均被捕获并关联到新状态；startup 各 14 条，P1 tail 1 条，P2 tail 0 条，未提交、未捕获、未呈现和删失均逐项核验并保留。本次有限刺激没有刚好覆盖每个最坏时刻；111/111 和最大响应低于 50 ms，不能证明任意输入落入 103.660 ms 空档时也有同样响应。整体流畅性仍未达到用户要求。
+
+relay 计划 burst 每方向各 28 个包，全部有 send 记录；实际计划延迟最大约 163.7 / 163.8 ms，burst 子集的 timer lateness 最大约 7.0 / 11.2 ms，而全程最大约 100.6 / 99.7 ms。后续逐事件对齐已确认下面的 103.660 ms 发生在注入结束数秒以后；全局最大值本身不足以做这个判断。结束时各方向一个已计划、尚未发送的包属于观察终止边界，不等于丢包。
+
+独立响应分析检查实际参数、CPU、构建、helper / probe、原始输入前后 SHA、连续窗口、所有 intent 身份/捕获/呈现关系和 15 个确认状态前缀，`checksPassed=true`，无 failure。证据：[rollback-enemy-index-response-evidence.json](rollback-enemy-index-response-evidence.json)，522,445 B，SHA `92e35a2466f039c373775bc81a161d6aec1789ab0ac63cf32d26280359f9c906`。没有为补字段重新运行游戏，也没有覆盖原始报告。
+
+### 新 burst 的 103.660 ms 在注入结束数秒后，仍以调度长等待为主
+
+P2 样本 4276→4277 的完成观测间隔 103.660 ms 与 rAF timestamp 间隔 97.185 ms，这次恰好使用相同端点。事件发生在计划 burst 开始后 6.426–6.530 s，即结束后约 5.926 s；在最后一个带 burst 标志的 packet 实际 send 之后仍晚约 5.766 s。不能把这次最长空档写成模拟网络突发的直接代价。
+
+该段 F 从 1557 前进到 1559，只有一次 native 调用 10.210 ms，correction / resim / wait 增量均为 0。request 4292 的 pending 为 93.245 ms，parent wrapper 退出之后的 eligible wait 为 **93.080 ms**。对应独立 relay 两个 send API bracket 为 47.692 / 44.955 ms。P1 同段有相邻 callback 完成观测间隙 67.235 / 50.560 ms，下一请求的 eligible wait 为 65.930 / 48.205 ms；这些不是两个独立新状态间隙，后者末端还出现一次 returnCode=2、零重演的 wait。P2 自身目标段仍没有 wait，不能将两端计数混合。
+
+P2 的 B 从 4 到 6，区间末端 network scale 从 1000 到 1140。输入缺口和制动是在这个较长区间之后观测到的，不能据末端 scale 将此前的 93 ms rAF 等待解释为主动平滑降速。正文结束时两端 scale 都回到 1000；按真实 relay 注入时钟分期，注入之后的两端 network scale p95 也都是 1000。当前完整样本保留了恢复与偶发制动，未假定所有降速都只由线路引发。
+
+相应长段与 Get-Process 查询仍无直接执行区间重叠；最近一次查询已在它们之前约 0.58–0.63 s 结束。覆盖该段的一秒整机 busy 约 27.10%，仍不足以定位单核或调度原因。P1 的轻量 anomaly `coverageComplete=false` 原样保留；本段分析依赖完整 rAF diagnostics 与原始 samples，不把不完整 anomaly 前史说成覆盖完整。
+
+新 context 检查均通过，raw / helper / build / 来源证据前后身份稳定。证据：[rollback-enemy-index-burst-gap-context.json](rollback-enemy-index-burst-gap-context.json)，333,945 B，SHA `5b9322700c77751633c9df5f6bb50b98ae2c1d81f59bb8188f5705d503e1dab8`；原 raw SHA `76e8d8e6573e28950aa41da0356f88fc25ee628dac6c971fe9f1d47dc70b9f1e`。完整逐事件说明见 [rollback-enemy-index-burst-gap-analysis.md](rollback-enemy-index-burst-gap-analysis.md)。完整 packet/请求时钟保持各自原域；已有 timeOrigin 对齐未给出独立误差界，不能用亚毫秒顺序证明 relay 导致浏览器停顿。
+
+本次音频每端抽样 359 个输出块，P1 / P2 非零 357 / 358，零块索引分别为 [0,1] / [0]，没有作为热身删除，也不是硬件可听性验收。15 个 confirmed 前缀检查点一致，但原记录 `sameFrame=false`、`finalComparable=false`：两端结束时的预测状态不是同一可比较帧，不能写成 final-world-hash 完全相同。
+
+### 信息预算影子实验：当前规则不上线，误报与漏报都保留
+
+已实际执行 [预声明计划](rollback-information-pacing-shadow-plan.json)，没有改变 H=8、D=0、生产调速或源码。12 个纯模型/区间契约、两份旧 raw 的身份和四端数据形状检查全部通过；正式分析一次 838 ms，另一次仅解析派生 evidence 的摘要为 141 ms。没有重跑浏览器，也没有看完结果再调分位数或覆盖旧证据。
+
+这个模型用最近 32 个合格的“连续实际输入前沿 A 不推进”区间、条件剩余时间 p90，以及当前余量，比较保持原速与按现有斜率平滑升至 scale=2 的连续预算。它保留一帧余量，并将回滚、明显 native / 回调延迟和不完整观察分开。预警先按当时历史冻结，之后才用下一 A 的完整观察区间评价；整份诊断 valid 仍只是事后证据资格门，不是在线控制器当时能知道的信号。
+
+| 连续正文、每个 A 静止区间的首预警 | 旧 burst P1 | 旧 burst P2 | relay125 P1 / P2 |
+|---|---:|---:|---:|
+| 首预警数 | 36 | 61 | 0 / 0 |
+| 新信息在原速安全预算内到达：无必要预警代理 | 28 | 53 | 0 / 0 |
+| 后续出现本地观察污染，保留未知 | 8 | 8 | 0 / 0 |
+| 首预警命中的严格模型机会 | 0 | 0 | 0 / 0 |
+| 对所有点另行回看的未预警严格模型机会 | **1** | **1** | 0 / 0 |
+
+完整报告含前缀/尾部，共 99 次首预警，82 个无必要代理、17 个污染未知；正文为 97、81、16。不能把重复预警点当作独立机会，也不能把污染、右删失和所有未预警 gap 算作真阴性。
+
+两个漏报点均已积累 32 个合格历史 gap，条件 survivor 为 32 / 13；当时预测剩余 p90 为 33.3475 / 21.5875 ms，小于原速安全预算 50.1000 / 49.8500 ms，因此没有预警。实际下一 A 区间却为 [51.590,58.205] / [50.260,64.365] ms，落在原速与约 80.685 ms 的渐进制动模型预算之间。但它们相对原 B 制动的领先下界仅 5.045 / 2.040 ms，实际到达下界超过原速预算也只有约 1.490 / 0.410 ms。离散 Pump、已有 scheduler credit 和真实反馈闭环均未模拟；这不是已验证可以避免真实停顿的收益。
+
+四端正文全部已经暖机，不能把规则表现主要归为历史数据不足。relay125 大部分有余量的点早已处于当前或同 gap 既有制动，所以没有严格的“更早制动”机会；这不排除改进现有慢速控制或历史窗口。旧 raw 缺少每 Pump 服务、剩余队列、逐输入 browser 到达和远端 producer 生成边界，A 静止不能归因为线路延迟。
+
+当前规则保持离线，不将 `overdue-unknown` 直接连接生产降速。完整判断见 [rollback-information-pacing-shadow-results.md](rollback-information-pacing-shadow-results.md)；全部 11,695,729 B 数值 evidence、161,764 B 摘要和预声明源码均已保存。摘要 SHA `00e8543522581189a1ad2230ca119538edb18daf7f4fcbcea2a5fda6bd844c6e`，完整 evidence SHA `e08302b1efce870057e8197eb8d17d10f66f20d133c3939fe3433356b54fda6c`。
+
+### 新诊断思路已做可行性校准：relay wall elapsed 与线程 CPU 分别记录
+
+E1 和新 burst 都出现几十毫秒的 relay send API bracket，因此下一步可以给有界 relay 观察增加当前线程 CPU 的前后原值，用于粗略区分线程计算与阻塞/失去调度。nig 当前 Node v24.13.0 的 `process.threadCpuUsage` 已实际调用成功。本轮仅新增独立 feasibility 脚本并执行一次；没有植入冻结 relay / harness 或启动新游戏。
+
+预先写定的 5 个步骤全部保留：2000 次 counter read 循环共 0.8346 ms；两次要求 50 ms 的阻塞等待实际为 58.1647 / 59.4759 ms，报告线程 CPU 增量均为 0；两次 50 ms 忙循环实际为 50.0774 / 50.0214 ms，但 CPU 增量报告为 63 / 62 ms。后两项超过墙钟区间的结果原样保留，说明短窗读数不能用于精确 CPU 百分比、亚毫秒因果或 `wall−CPU` 等候估计。0.8346 ms 也只是含循环与读取的有限观察，不是未来逐包插桩开销保证。
+
+该校准支持进一步试验粗粒度长停顿分类，未解决 relay 根因。低线程 CPU 仍不能单独区分同步阻塞与 OS 抢占；需保留原 API bracket、时钟和完整计数，并做相同控制下的观察开销对照。证据：[rollback-relay-thread-cpu-feasibility.json](rollback-relay-thread-cpu-feasibility.json)，5,665 B，SHA `7fbe18d927438cab93e2d876ea94e04035de294583821625943f2697a19e5e15`；[执行及精度边界](rollback-relay-thread-cpu-feasibility-execution.json) 记录命令 `6JXn_UdCpCZfhNfBPS5q9YBG`、exit 0，`checksPassed` 只表示接口、单调计数及源码身份，不表示精度或游戏性能验收。
+
+### 接续工作与验收顺序
+
+1. **先让停顿具备可区分的来源。** 保持 B / E 标量 release、当前输入带与双时钟基线；在独立后续诊断版本中，增加默认关闭且 O(1)、有界的 producer / browser queue / 每 Pump 接纳计数与原始 relay 线程 CPU bracket。优先回答输入尚未生成、尚未到达、已排队未处理，还是游戏 callback 未获调度。250 ms anomaly 只用于长事件保留，50 / 100 ms 间隙仍须从完整窗口统计，不能升格为可接受阈值。
+2. **并行推进真实回滚成本优化。** [完整 VM RestoreChain 去重设计](rollback-vm-restore-chain-proposal.md) 已具体到同步 newest→oldest 恢复链、完整身份、未保存页与未知观察者的回退。任何 AfterRestore 或非空多态 AttackState 都让首版整链回退，普通 journal、owning 状态和音频语义不变。先用旧路径作 oracle 验证 hole、page、1/2/8 深度、ring 与回退，再做真实 CPU4 release 对照。深 8 的约 64% 时间在无新纠错的续跑重演，故还要量清 Save / 普通 Tick / VM 更新 / 音频成本，不能指望只改 Restore 解决全部问题。本设计尚未实现。
+3. **以 TH07 的结构成果为后续候选。** TH09 的 cp3 需要实际跨帧 first-write 和 owning 生命周期改造，不是删除三次 Save 中的两次；H=12 会多保留状态并可能增加预算检查之前的原子恢复，须与 CPU 成本、输入响应一起验证。保留 TH06MP / TH07MP 的目标价值，不用一次繁忙宿主样本否定它们，也不把不同游戏历史 Hz 当同机速度 A/B。
+4. **direct / relay 独立控制路由与窗口环境。** 现有 direct 仅证实本机 host/host UDP，且基本无正文回滚；下一组需要路径验证后再覆盖有扰动的纠错、repair 与启动回退。窗口位置、relay 拓扑、HOST_LOAD 和传输路径分别作为单变量，不能一起变化后笼统宣布环境修复。现有查询无重叠，降低了“Get-Process 正在执行就是原因”的证据支持；不盲目重复该假设。
+5. **按玩家看到的结果验收。** 保留 D=0，同时检查独立计划输入→提交→捕获→完成新状态、遗漏和删失。持续展示逻辑推进与新状态完成间隔 p95/p99/max、超过 50/100/250 ms 的事件、回滚欠账、native 长调用和音频零块。网络信息不足可以有平滑速度变化；平均 Hz、重画旧状态或没有复现一次秒卡均不构成整体流畅验收。
+
+### 本地提交与证据保存
+
+- `d6ba14f00e317c6400fee0e7316094cf506d859e`：固定敌人池 first-write 索引、真实组件用例和 owning-state 证据。
+- `0cdea91f6dbe56a8cf208915f222fc8074b7e980`：连续窗口、轻量 rAF 观察、CPU4 深恢复 harness、ABBA 与独立输入响应分析和证据。
+- `1cc2cbd7bd13b0f9e7394a8e670a27c07940e13f`：预声明信息预算模型、一次正式执行、完整不利结果与后续判断。
+
+所有提交限本地，没有推送、合并或部署。输入合并 common 保持 `512353cab9eaa4f6744f867b0eb07c61ee7f2b0e`，音频 SIMD 仍默认关闭，原始大日志与失败运行保留在 artifacts。已分析的源码和证据保留精确字节；本轮 staged diff 检查在上述第二、第三组分别报告 2 / 5 个仅 EOF 空行的样式项，最后一组解释文档另有 1 项，合计 8 项。未将它们误称为全部 diff-check 通过，也未为了格式改变已冻结 SHA。生产索引组的 diff-check 通过。
+
+最后独立复核确认生产索引与报告不存在已发现的阻断问题。前三笔本地提交完成后，另一次 [最终身份核验](rollback-enemy-index-final-verification.json) 逐项检查 26 个已分析源码 / evidence / B、E 构建字节身份，全部相符，common 的 HEAD 与 clean 状态也符合预期。此项没有重跑实测或将身份一致当成性能验收。
+
+## 截至 2026-10-10 的结论（保留历史边界）
 
 - 发布版在 headed 4× 对照中已多次接近 60 Hz，包含未改游戏代码的原 P 和输入合并 B；实际本机 RTC direct 也达到 59.98 Hz。输入发送合并在真实包记录中验证成功，但稳定 CPU 收益仍未证实。整体目标尚未验收：1,800 帧独立 relay39 运行仍出现两端约 1.4 秒的 active rAF 缺派发。
 - 新增 B 的每方向 125±5 ms / 1,800 帧 / CPU[1,4] / D=0 运行，按连续 180→1800 边界重算为 40.608 / 40.616 Hz，最长新状态间隔 41.135 / 44.695 ms；状态检查通过。P2 正式 161 条组合输入中 160 条被采样并呈现，中间一条仅保持 4.840 ms 的“左移且低速”组合被后续“左移”替代；左键按下仍被后续采样。完整响应与缺项一并保留，不能只展示成功延迟。
