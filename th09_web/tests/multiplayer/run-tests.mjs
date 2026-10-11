@@ -39,6 +39,8 @@ const suites={
     ...['NetplayCore','NetplayProtocol','NetplaySession','SessionChannel'].map(n=>resolve(common,'src/netplay',n+'.cpp'))],
   adonis:[resolve(root,'cpp/multiplayer/RollbackSession.cpp'),
     ...['NetplayCore','NetplayProtocol','NetplaySession','SessionChannel'].map(n=>resolve(common,'src/netplay',n+'.cpp'))],
+  'mobile-prediction':[resolve(root,'cpp/multiplayer/RollbackSession.cpp'),
+    ...['NetplayCore','NetplayProtocol','NetplaySession','SessionChannel'].map(n=>resolve(common,'src/netplay',n+'.cpp'))],
   'dynamic-state':[resolve(root,'cpp/multiplayer/DynamicState.cpp')],
   'enemy-capture':[resolve(root,'cpp/multiplayer/WorldState.cpp'),resolve(root,'cpp/multiplayer/DynamicState.cpp'),
     resolve(common,'src/netplay/RollbackJournal.cpp')],
@@ -52,6 +54,10 @@ for(const [suite,implementation] of Object.entries(suites)){
   if(requested.length&&!requested.includes(suite))continue;
   const wasm=resolve(out,suite+'.wasm');
   const sources=[resolve(root,'tests/multiplayer',suite+'.cpp'),...implementation];
+  // These suites include the shared wire/model fixture without compiling it
+  // twice. Retain that transitive C++ source in their provenance record.
+  const sourceInputs=['adonis','mobile-prediction'].includes(suite)
+    ? [...sources,resolve(root,'tests/multiplayer/session.cpp')] : sources;
   // RTTI is a test oracle for dynamic-type preservation only. Production
   // implementations and all attack constructors are checked without it below.
   compile([...flags,...(suite==='session'?['-fno-rtti']:[]),'-Wl,-z,stack-size=1048576',...sources,'-o',wasm]);
@@ -62,7 +68,7 @@ for(const [suite,implementation] of Object.entries(suites)){
   writeFileSync(resolve(out,suite+'-report.json'),JSON.stringify({passed:true,
     scope:'TH09 rollback component gate; not whole-game, browser, phone or performance acceptance',
     wasmSha256:sha(bytes),compiler:spawnSync(compiler,['--version'],{encoding:'utf8',windowsHide:true}).stdout.trim(),
-    flags,headers:headerHashes,sources:Object.fromEntries(sources.map(p=>[p,sha(readFileSync(p))]))},null,2)+'\n');
+    flags,headers:headerHashes,sources:Object.fromEntries(sourceInputs.map(p=>[p,sha(readFileSync(p))]))},null,2)+'\n');
 }
 if(!requested.length||requested.includes('dynamic-state')){
   compile([...flags,'-fno-rtti','-fsyntax-only',resolve(root,'cpp/multiplayer/DynamicState.cpp'),

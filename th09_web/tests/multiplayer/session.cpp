@@ -125,7 +125,8 @@ struct Driver {
         const auto f=session.Frame();auto d=session.Prepare();if(!d.canAdvance)return false;
         CHECK(d.inputs[side]==input(side,f));++localImmediate;
         for(unsigned p=0;p<2;++p)if(d.predictedMask&(1u<<p)){
-            CHECK(!(d.inputs[p].buttons&(2|8)));CHECK(d.inputs[p].analogMode==AnalogMode::None);
+            CHECK(!(d.inputs[p].buttons&(2|8))&&!d.inputs[p].touchBomb);
+            CHECK(RollbackSession::ValidInput(d.inputs[p]));
         }
         checkpoints[f%RollbackSession::History]=state;state.step(d.inputs);hashes[f]=state.hash;
         CHECK(session.Complete(d));return true;

@@ -39,11 +39,11 @@ bool RollbackSession::Configure(const Netplay::SessionConfig& session,std::uint6
     config.predictableButtons = 1 | 4 | 0xf0;
     config.directionButtons = 0xf0;
     config.maxDirectionPredictionFrames = 3;
-    // TH09's network pointer is a held absolute field target, not a fresh
-    // displacement. Hybrid can predict the last target (or joystick vector)
-    // without repeatedly erasing it. Late moves/releases still use full undo.
-    // Keep mode 0 unchanged as the experiment's frozen-policy control.
-    config.directTouchIsAbsolute = mode == Netplay::AdonisMode::Hybrid;
+    // TH09 transmits a held absolute field target, not fresh displacement.
+    // Both rollback modes retain that target (or the held joystick vector).
+    // Actual moves, releases and metadata changes still use full input
+    // comparison and undo; no device displacement is consumed again.
+    config.directTouchIsAbsolute = mode != Netplay::AdonisMode::Delay;
     Netplay::SessionChannelConfig policy;
     policy.repairIntervalMs = Netplay::InputRepairBudget::StalledMs;
     policy.adonisPhase = mode != Netplay::AdonisMode::Rollback;
@@ -216,15 +216,7 @@ Netplay::FrameDecision RollbackSession::Prepare() const {
     auto decision = core_.PrepareFrame(next_);
     if (!decision.canAdvance) return decision;
     for (unsigned seat = 0; seat < 2; ++seat) {
-        auto& input = decision.inputs[seat];
-        if ((decision.predictedMask & (1u << seat)) && mode_ != Netplay::AdonisMode::Hybrid) {
-            // Common DirectTouch prediction models displacement. TH09 ships a
-            // field target: zeroing its axes would aim at the origin. Missing
-            // pointer input therefore predicts no pointer override.
-            input.analogMode = Netplay::AnalogMode::None;
-            input.x = input.y = 0;
-            input.unlimited = input.touchUsed = input.touchBomb = false;
-        }
+        const auto& input = decision.inputs[seat];
         if (!ValidInput(input)) return {};
     }
     return decision;
