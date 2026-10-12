@@ -9,7 +9,9 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const compiled = resolve(root, process.env.TH09_OUTPUT || 'artifacts/sdl-release');
 const variant = process.argv.includes('--multiplayer') ? 'multiplayer' : 'normal';
 const output = process.env.EAGLER_RUNTIME_OUTPUT ? resolve(process.env.EAGLER_RUNTIME_OUTPUT) : resolve(root, variant === 'multiplayer' ? 'build-eagler-multiplayer' : 'build-eagler');
-const native = process.env.TH09_RUNTIME_ASSETS ? resolve(process.env.TH09_RUNTIME_ASSETS) : resolve(root, 'assets/sdl-native');
+const fontRoot = process.env.EAGLER_FONT_ROOT || process.env.TH09_RUNTIME_ASSETS;
+if (!fontRoot) throw Error('Set EAGLER_FONT_ROOT to the TH09 font resource directory');
+const native = resolve(fontRoot);
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 const inputs = [
   ['th09.html', resolve(root, 'sdl-runtime/managed.html')],
@@ -24,6 +26,8 @@ const inputs = [
 for (const [, source] of inputs) if (!existsSync(source)) throw Error(`Missing TH09 Runtime input: ${source}`);
 const build = JSON.parse(readFileSync(resolve(compiled, 'build.json'), 'utf8'));
 const wasm = readFileSync(resolve(compiled, 'th09.wasm'));
+if (sha256(readFileSync(resolve(compiled, 'th09.mjs'))) !== build.loaderSha256) throw Error('TH09 loader does not match its build attestation');
+for (const [name, expected] of Object.entries(build.sources)) if (sha256(readFileSync(resolve(root, '..', name))) !== expected) throw Error('Rebuild changed source: ' + name);
 if (!Number.isFinite(Date.parse(build.builtAt))) throw Error('Rebuild TH09 to record its build timestamp');
 if (build.kind !== 'th09-native-web-release-candidate' || build.sha256 !== sha256(wasm)) {
   throw Error('TH09 release WASM does not match its build attestation');

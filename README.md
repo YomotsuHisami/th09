@@ -1,33 +1,31 @@
-This repo is uploaded on behalf of [@SteinsGateON](https://space.bilibili.com/34714121).
+# TH09 花映塚
 
-# th09
+[English](README.en.md) · [维护指南](docs/MAINTENANCE.md)
 
-[![QQ Group 1124121427](https://img.shields.io/badge/QQ%20Group-1124121427-12B7F5?logo=tencentqq)](https://qm.qq.com/q/eeUrxIltug?from=tim)
+本仓库维护《花映塚》的 C++/SDL Runtime 及作品适配，作为 eagler-touhou 根目录 Git 子模块保留独立提交历史。游戏状态和原版文件语义由本仓库拥有；Web 启动器和站点交付由主项目 `launcher/web/` 拥有。
 
-A high-fidelity, portable reimplementation of 東方花映塚　～ Phantasmagoria of Flower View ver 1.50a.
+## 构建
 
-## Layout
+作为主项目子模块使用时，从 eagler-touhou 根目录执行：
 
-- `th09_web/`: TH09 game, SDL runtime, documentation, and source tests.
-- `th10_web/launcher/`: the shared browser launcher and package subsystem used by TH09.
-- `portable/`: shared SDL renderer and input code.
-- `tools/`: the pinned Emscripten installer metadata.
-
-## Build
-
-Install the pinned toolchain, then build from `th09_web/`:
-
-```powershell
-python tools/download-emscripten.py
-npm run web:build
+```text
+npm run dependencies -- init th09
+npm run runtime -- th09 --emsdk "<SDK>" --font-root "<字体目录>"
 ```
 
-Build outputs are written below `th09_web/artifacts/` and are intentionally not tracked.
+主项目入口读取实际构建声明，不自动创建 worktree。具体输入及普通/多人选择见[Runtime 构建指南](https://github.com/YomotsuHisami/eagler-touhou/blob/main/docs/playbooks/runtime-build.md)。
 
-## Assets and licensing
+## 当前证据
 
-This repository does not track the original Touhou executable, data, music, replay, save files, extracted retail assets, or bundled development toolchains. A runnable package must be assembled locally from files you are legally allowed to use.
+2026-10 工程整理：普通源码构建、目录 Runtime 打包与验证通过；产物仍声明 completeGame: false。 这些结果不代表所有关卡、机体、设备和模式均已完成验收。后续修改需要在本次声明之外补充受影响的实际行为验证。
 
-## License
+## 源码与资源
 
-This project is licensed under the MIT License.
+- `th09_web/cpp/game/`：作品规则、对象和生命周期。
+- `portable/`：本作使用的平台与绘制适配。
+- `third_party/eagler-common`：本作锁定的公共库版本。
+- `th09_web/scripts/build-sdl.mjs --release`：实际构建入口。
+
+不随源码提交原版 DATA、音乐、个人存档、Replay 或工具链。许可按各组件保留的 LICENSE/NOTICE 处理；不对原版游戏资源作统一授权声明。
+
+原仓库的移植来源署名：[SteinsGateON](https://space.bilibili.com/34714121)。
