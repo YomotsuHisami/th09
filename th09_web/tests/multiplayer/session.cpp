@@ -1,6 +1,7 @@
 #include "RollbackSession.hpp"
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <deque>
@@ -267,6 +268,14 @@ void input_batch_scopes() {
     std::puts("Input send batch: partial replay and rejected capture flush PASS");
 }
 void network_pacing() {
+    // Fixed plateau expectations, with enough time for the existing 50 ms ramp.
+    struct PacingTarget { unsigned missing; double scale; };
+    constexpr PacingTarget targets[]={{3,1.0},{4,4.0/3.0},{5,5.0/3.0},{6,2.0}};
+    for(const auto& target:targets){
+        PacingFixture f;f.advance(target.missing);f.pump(100);
+        CHECK(f.left.session.MissingRemoteInputs()==target.missing);
+        CHECK(std::abs(f.left.session.NetworkIntervalScale()-target.scale)<1e-9);
+    }
     {
         PacingFixture f;f.advance(7);f.pump(0);
         CHECK(f.left.session.IntervalScale()==1);
@@ -293,14 +302,14 @@ void network_pacing() {
         CHECK(f.left.session.IntervalScale()==f.left.session.Channel().IntervalScale());
     }
     {
-        PacingFixture f;f.advance(4);f.pump(16);
+        PacingFixture f;f.advance(3);f.pump(16);
         CHECK(f.left.session.IntervalScale()==f.left.session.Channel().IntervalScale());
         f.advance(1);f.pump(32);const auto first=f.left.session.IntervalScale();
         CHECK(first>1&&first<2);
         f.advance(2);f.pump(48);CHECK(f.left.session.IntervalScale()>first);
         CHECK(f.left.session.IntervalScale()<2);
         f.pump(66);CHECK(f.left.session.IntervalScale()==2);
-        f.advance(1);f.capture();CHECK(f.left.session.Frame()==RollbackSession::History);
+        f.advance(2);f.capture();CHECK(f.left.session.Frame()==RollbackSession::History);
         CHECK(!f.left.session.Prepare().canAdvance); // The ninth prediction stays forbidden.
         f.pump(82);f.actual(1,7);f.pump(98);
         CHECK(f.left.session.RollbackFrame()==1);

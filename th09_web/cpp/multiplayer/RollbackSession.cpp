@@ -119,7 +119,8 @@ void RollbackSession::UpdateNetworkPacing(std::uint64_t now, bool expectsInput) 
     // Rewinding next_ does not create prediction room. Use the highest live
     // frontier and contiguous actual remote inputs, even during correction.
     const auto outstanding = MissingRemoteInputs();
-    const double target = 1 + std::clamp((double(outstanding) - 4) / 3, 0.0, 1.0);
+    // Leave one more prediction frame for a gradual information shortage.
+    const double target = 1 + std::clamp((double(outstanding) - 3) / 3, 0.0, 1.0);
     // Only future wall-clock scheduling changes. Capture ownership, the
     // eight-frame prediction bound and 60 Hz logical steps stay unchanged.
     if (target > networkIntervalScale_)
