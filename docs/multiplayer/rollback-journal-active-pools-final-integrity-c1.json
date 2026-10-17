@@ -1,0 +1,132 @@
+{
+  "schema": "th09/journal-final-integrity/1",
+  "createdAt": "2026-10-11T15:34:25.257Z",
+  "root": "D:\\workspace\\eagler\\worktrees\\th09-journal-active-pools-4x",
+  "head": "63127575d43ea5ef35b317ff8137b00a1ab5b1cc",
+  "sourceCount": 275,
+  "sourceMismatches": [],
+  "wasmChecks": [
+    {
+      "label": "reference-release",
+      "path": "D:\\workspace\\eagler\\worktrees\\th09-mobile-rollback-4x\\th09_web\\artifacts\\mobile-rollback-release-matched\\th09.wasm",
+      "expected": "037c9cd52e70e2c8e8ee516cf15b6aee7f0de5951f88d519b2311cc1c5def373",
+      "actual": "037c9cd52e70e2c8e8ee516cf15b6aee7f0de5951f88d519b2311cc1c5def373",
+      "matched": true
+    },
+    {
+      "label": "candidate-release",
+      "path": "D:\\workspace\\eagler\\worktrees\\th09-journal-active-pools-4x\\th09_web\\artifacts\\journal-active-pools-release-c1\\th09.wasm",
+      "expected": "ad3476706c8dc1a196bf1d2d65f7e0840ad07ba9632548ec1ba3678db6df3409",
+      "actual": "ad3476706c8dc1a196bf1d2d65f7e0840ad07ba9632548ec1ba3678db6df3409",
+      "matched": true
+    },
+    {
+      "label": "reference-diagnostic",
+      "path": "D:\\workspace\\eagler\\worktrees\\th09-mobile-rollback-4x\\th09_web\\artifacts\\mobile-rollback-live-matched\\th09-presentation.wasm",
+      "expected": "f0fe104e03cf4c10617c16c8c08897784a83b02d5e8eeeabf8c2ee1e7e9e58cb",
+      "actual": "f0fe104e03cf4c10617c16c8c08897784a83b02d5e8eeeabf8c2ee1e7e9e58cb",
+      "matched": true
+    },
+    {
+      "label": "candidate-diagnostic",
+      "path": "D:\\workspace\\eagler\\worktrees\\th09-journal-active-pools-4x\\th09_web\\artifacts\\journal-active-pools-live-c1\\th09-presentation.wasm",
+      "expected": "04f4c7086a427440911b6288a359212e5d936860500a462baf6c2308628c16e0",
+      "actual": "04f4c7086a427440911b6288a359212e5d936860500a462baf6c2308628c16e0",
+      "matched": true
+    },
+    {
+      "label": "reference-release-loader",
+      "path": "D:\\workspace\\eagler\\worktrees\\th09-mobile-rollback-4x\\th09_web\\artifacts\\mobile-rollback-release-matched\\th09.mjs",
+      "expected": "0ce63595ee73ecd0bd608adbeeabb25c6c221f23cdc734b19d56df652fcdf9c3",
+      "actual": "0ce63595ee73ecd0bd608adbeeabb25c6c221f23cdc734b19d56df652fcdf9c3",
+      "matched": true
+    },
+    {
+      "label": "candidate-release-loader",
+      "path": "D:\\workspace\\eagler\\worktrees\\th09-journal-active-pools-4x\\th09_web\\artifacts\\journal-active-pools-release-c1\\th09.mjs",
+      "expected": "d5711616a535ed712a74f0806a3c916d355ad5e4053f268d4a828551328992d1",
+      "actual": "d5711616a535ed712a74f0806a3c916d355ad5e4053f268d4a828551328992d1",
+      "matched": true
+    }
+  ],
+  "nonWasmLoaderControlIdentityChanges": [],
+  "runOrder": [
+    {
+      "label": "journal-active-pools-release-relay39-a1",
+      "qualified": true,
+      "correctness": true,
+      "confirmedHashQualification": {
+        "qualified": true,
+        "requiredChecks": 10,
+        "errors": []
+      },
+      "sourceStable": true,
+      "status": 0,
+      "elapsedMs": 69644.0207,
+      "rawIdentityStable": true,
+      "wasmMatchesProtocol": true,
+      "teardownClean": true,
+      "finalComparable": false
+    },
+    {
+      "label": "journal-active-pools-release-relay39-b1",
+      "qualified": true,
+      "correctness": true,
+      "confirmedHashQualification": {
+        "qualified": true,
+        "requiredChecks": 10,
+        "errors": []
+      },
+      "sourceStable": true,
+      "status": 0,
+      "elapsedMs": 76572.13130000001,
+      "rawIdentityStable": true,
+      "wasmMatchesProtocol": true,
+      "teardownClean": true,
+      "finalComparable": false
+    },
+    {
+      "label": "journal-active-pools-release-relay39-b2",
+      "qualified": true,
+      "correctness": true,
+      "confirmedHashQualification": {
+        "qualified": true,
+        "requiredChecks": 10,
+        "errors": []
+      },
+      "sourceStable": true,
+      "status": 0,
+      "elapsedMs": 50628.5319,
+      "rawIdentityStable": true,
+      "wasmMatchesProtocol": true,
+      "teardownClean": true,
+      "finalComparable": false
+    },
+    {
+      "label": "journal-active-pools-release-relay39-a2",
+      "qualified": true,
+      "correctness": true,
+      "confirmedHashQualification": {
+        "qualified": true,
+        "requiredChecks": 10,
+        "errors": []
+      },
+      "sourceStable": true,
+      "status": 0,
+      "elapsedMs": 49150.2114,
+      "rawIdentityStable": true,
+      "wasmMatchesProtocol": true,
+      "teardownClean": true,
+      "finalComparable": false
+    }
+  ],
+  "gitDiffCheck": {
+    "status": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  "diffStat": "th09_web/cpp/game/Player.cpp                   |  2 +-\n th09_web/cpp/game/PlayerShots.cpp              | 11 +++++++++--\n th09_web/cpp/game/PlayerShots.hpp              |  4 ++++\n th09_web/cpp/game/PoolCheckpoint.hpp           |  3 ++-\n th09_web/cpp/multiplayer/WorldState.cpp        | 24 ++++++++++++++++++++++--\n th09_web/cpp/multiplayer/WorldState.hpp        | 11 +++++++++++\n th09_web/tests/multiplayer/bullet-snapshot.cpp |  1 +\n th09_web/tests/multiplayer/run-tests.mjs       |  3 +++\n 8 files changed, 53 insertions(+), 6 deletions(-)",
+  "workingTreeStatus": "M th09_web/cpp/game/Player.cpp\n M th09_web/cpp/game/PlayerShots.cpp\n M th09_web/cpp/game/PlayerShots.hpp\n M th09_web/cpp/game/PoolCheckpoint.hpp\n M th09_web/cpp/multiplayer/WorldState.cpp\n M th09_web/cpp/multiplayer/WorldState.hpp\n M th09_web/tests/multiplayer/bullet-snapshot.cpp\n M th09_web/tests/multiplayer/run-tests.mjs\n?? docs/multiplayer/rollback-journal-active-pools-build-live-c1.json\n?? docs/multiplayer/rollback-journal-active-pools-build-release-c1.json\n?? docs/multiplayer/rollback-journal-active-pools-paired4-c3-c4-summary.json\n?? docs/multiplayer/rollback-journal-active-pools-paired4-c3-summary.json\n?? docs/multiplayer/rollback-journal-active-pools-plan-c1.json\n?? docs/multiplayer/rollback-journal-active-pools-release-a1-summary.json\n?? docs/multiplayer/rollback-journal-active-pools-release-abba-c1-summary.json\n?? docs/multiplayer/rollback-journal-active-pools-release-protocol-c1.json\n?? docs/multiplayer/rollback-journal-active-pools-run-integrity-c1.json\n?? docs/multiplayer/rollback-journal-active-pools-work.md\n?? th09_web/tests/multiplayer/journal-live-summary.mjs\n?? th09_web/tests/multiplayer/journal-paired-browser.mjs\n?? th09_web/tests/multiplayer/journal-paired-summary.mjs\n?? th09_web/tests/multiplayer/journal-run.mjs\n?? th09_web/tests/multiplayer/shot-capture.cpp",
+  "scope": "Read-only source/binary/raw identity verification after the four release runs. No performance threshold is inferred from qualification or exit codes.",
+  "passed": true
+}

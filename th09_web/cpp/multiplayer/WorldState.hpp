@@ -25,6 +25,7 @@ public:
     void BeforeBullet(BulletManager&,std::size_t) override;
     void BeforeBulletVisual(BulletVisuals&,std::size_t) override;
     void BeforeBulletAnimation(BulletVisuals&,std::size_t,std::size_t) override;
+    void BeforePlayerShot(PlayerShots&,std::size_t) override;
     void BeforeBytes(void* p,std::size_t n)override{Touch(p,n);}
     bool Save(GameSession&);
     u32 Fingerprint()const{return digest.value;}
@@ -75,6 +76,7 @@ private:
     // Unknown owners retain the original pointer-list fallback in BeforeEnemy.
     // This index owns only first-write metadata, never ECL state or pointers.
     friend struct WorldStateEnemyCaptureTest;
+    friend struct WorldStateShotCaptureTest;
     static constexpr std::size_t EnemySlotsPerRange=EnemyManager::capacity+2;
     struct EnemyRange { EclVm* prototype=nullptr;EclVm* pool=nullptr; };
     std::array<EnemyRange,2> enemyRanges{};
@@ -95,6 +97,14 @@ private:
     std::size_t effectRangeCount=0,effectSlots=0;
     std::bitset<1400> effectSaved;
     std::bitset<257> attackSaved;
+    // Player shot pools have stable addresses for the same match horizon as
+    // bullets. Capture complete live slots and protect a cold slot on creation.
+    struct ShotRange {
+        PlayerShots* owner=nullptr;
+        Netplay::SparsePoolCapture<PlayerShots::capacity> capture;
+    };
+    std::array<ShotRange,2> shotRanges{};
+    std::size_t shotRangeCount=0;
     struct BulletRange {
         static constexpr std::size_t VisualCount=(BulletManager::update_count+1)*5;
         static constexpr std::size_t VMsPerPage=64,PageBytes=VMsPerPage*sizeof(AnmVm);
@@ -130,6 +140,7 @@ private:
     void Effects(EffectManager&);
     void Attacks(AttackQueue&);
     void PlayerState(Player&);
+    void Shots(PlayerShots&);
     void BackgroundState(Background&);
     void Recording(ReplayArchive&);
 };

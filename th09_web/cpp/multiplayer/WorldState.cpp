@@ -110,9 +110,29 @@ void WorldState::Attacks(AttackQueue& x) {
     if(sparse&&!hashEnabled)Bind(x.checkpoint);
     for(auto& list:x.draw_lists)Vector(list);
 }
+void WorldState::BeforePlayerShot(PlayerShots& x,std::size_t index) {
+    if(index>=x.shots.size()){good=false;return;}
+    for(std::size_t i=0;i<shotRangeCount;++i)if(shotRanges[i].owner==&x){
+        good=shotRanges[i].capture.TouchSlot(x.shots.data(),&x.shots[index],
+            [this](void* p,std::size_t n){return Touch(p,n);})&&good;
+        return;
+    }
+    good=false;
+}
+void WorldState::Shots(PlayerShots& x) {
+    static_assert(std::is_trivially_copyable_v<PlayerShot>);
+    // Keep the independent dense/hash path and complete per-slot bytes. The
+    // sparse path changes capture timing, never the fields a live shot owns.
+    if(!sparse||hashEnabled){NamedFields("s.shots",x.shots);return;}
+    if(shotRangeCount==shotRanges.size()){good=false;return;}
+    auto& range=shotRanges[shotRangeCount++];range.owner=&x;
+    good=range.capture.Capture(x.shots.data(),[](const PlayerShot& shot){return shot.state!=0;},
+        [this](void* p,std::size_t n){return Touch(p,n);})&&good;
+    Bind(x.checkpoint);
+}
 void WorldState::PlayerState(Player& x) {
     NamedFields("x.frame",x.frame);NamedFields("x.motion",x.motion);NamedFields("x.control",x.control);NamedFields("x.body",x.body);NamedFields("x.input",x.input);NamedFields("x.hazards",x.hazards);NamedFields("x.cpu",x.cpu);NamedFields("x.combo_state",x.combo_state);NamedFields("x.secondary_target",x.secondary_target);NamedFields("x.target_priority",x.target_priority);NamedFields("x.attack_levels",x.attack_levels);NamedFields("x.initialized",x.initialized);
-    auto& s=x.shots;NamedFields("s.shots",s.shots);NamedFields("s.player_position",s.player_position);NamedFields("s.option_positions",s.option_positions);NamedFields("s.target",s.target);NamedFields("s.player_scale",s.player_scale);NamedFields("s.side",s.side);NamedFields("s.beam_time",s.beam_time);NamedFields("s.beam",s.beam);NamedFields("s.areas",s.areas);
+    auto& s=x.shots;Shots(s);NamedFields("s.player_position",s.player_position);NamedFields("s.option_positions",s.option_positions);NamedFields("s.target",s.target);NamedFields("s.player_scale",s.player_scale);NamedFields("s.side",s.side);NamedFields("s.beam_time",s.beam_time);NamedFields("s.beam",s.beam);NamedFields("s.areas",s.areas);
     NamedFields("x.items.items",x.items.items);NamedFields("x.items.attraction",x.items.attraction);
     auto& l=x.life;NamedFields("l.input_controller",l.input_controller);NamedFields("l.display_frames",l.display_frames);NamedFields("l.hidden",l.hidden);NamedFields("l.knockback_z",l.knockback_z);NamedFields("l.shield_active",l.shield_active);NamedFields("l.shield_position",l.shield_position);
 }
@@ -140,7 +160,7 @@ void WorldState::Recording(ReplayArchive& x) {
 }
 bool WorldState::Save(GameSession& s) {
     Unbind();hashParts.clear();digest={};if(journal.IsFrameOpen())journal.EndFrame();journal.DiscardBefore(1);undo.clear();ResetEnemyCapture();effectCount=attackCount=0;effectRangeCount=effectSlots=0;effectSaved.reset();attackSaved.reset();ownedBytes=visualFirstWriteBlocks=0;good=journal.BeginFrame(0);
-    bulletRangeCount=0;
+    bulletRangeCount=shotRangeCount=0;
     // This adapter is specifically the stable live two-human versus world.
     if(!s.world||s.is_replay||s.world->rules.mode!=GameMode::versus)return good=false;
     NamedFields("s.state,s.animations.timing,s.animations.executed,s.animations.invalid,s.initial,s.current,s.inputs,s.scores,s.starting_replay_stage,s.demo,s.demo_input,s.demo_frames,s.warmed_stage,s.result,s.phase,s.continues,s.recordable,s.frames,s.timing,s.motion_input",s.state,s.animations.timing,s.animations.executed,s.animations.invalid,s.initial,s.current,s.inputs,s.scores,s.starting_replay_stage,s.demo,s.demo_input,s.demo_frames,s.warmed_stage,s.result,s.phase,s.continues,s.recordable,s.frames,s.timing,s.motion_input);Text(s.error);

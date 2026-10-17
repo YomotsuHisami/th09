@@ -1,0 +1,916 @@
+{
+  "schema": "th09/journal-paired-summary/1",
+  "createdAt": "2026-10-11T15:07:10.274Z",
+  "scope": "All retained CPU4 diagnostic pairs, normalized by frozen WASM identity even when page/build definitions are swapped. Costs are elapsed synchronous JS/Wasm calls, not CPU seconds, live multiplayer, per-frame depth8, rAF, or end-to-end input latency.",
+  "noPerformanceThresholdOrOutlierFilter": true,
+  "runs": [
+    {
+      "path": "D:\\workspace\\eagler\\worktrees\\th09-journal-active-pools-4x\\th09_web\\artifacts\\multiplayer-tests\\journal-active-pools-paired4-c3-report.json",
+      "sha256": "b4219ba93a64a014997edf2bfcf0da8e5f3d552842a0842bd2408df48ac803d8",
+      "passed": true,
+      "parameters": {
+        "cpuRate": 4,
+        "hardwareRequested": true,
+        "hostLoad": true,
+        "activatePage": true,
+        "warmupFrames": 180,
+        "baseBlocks": 40,
+        "checkpointBlocks": 80,
+        "workload": "single-checkpoint",
+        "ticksPerBlock": 8,
+        "firstBaseFrame": 180,
+        "firstCheckpointFrame": 500,
+        "finalFrameExclusive": 1140,
+        "order": "AB for even measured block indices; BA for odd indices; no concurrent game work",
+        "inputPolicy": "Unchanged pc-cost-browser deterministic input sequence, openProbe(0,1,2,3)",
+        "renderPolicy": "Semantic Draw every tick; submit the eighth tick; unchanged probe geometry policy",
+        "checkpointPolicy": "One sparse checkpoint per eight-tick block, restore once, resimulate the same eight ticks"
+      },
+      "builds": {
+        "A": {
+          "id": "A",
+          "role": "reference",
+          "artifactDirectory": "D:\\workspace\\eagler\\worktrees\\th09-mobile-rollback-4x\\th09_web\\artifacts\\mobile-rollback-live-matched",
+          "wasm": "f0fe104e03cf4c10617c16c8c08897784a83b02d5e8eeeabf8c2ee1e7e9e58cb",
+          "loader": "d6dfb6c40fd632bb748bc4a881e6f5dd1429aaa6de1cc4dade11ba82005da295",
+          "manifest": "897446c5628d5bbda6167f2f7fc9e57e4e4570ce16d14a4e244445938a083ae1"
+        },
+        "B": {
+          "id": "B",
+          "role": "candidate",
+          "artifactDirectory": "D:\\workspace\\eagler\\worktrees\\th09-journal-active-pools-4x\\th09_web\\artifacts\\journal-active-pools-live-c1",
+          "wasm": "04f4c7086a427440911b6288a359212e5d936860500a462baf6c2308628c16e0",
+          "loader": "77c7f803234c5dbe4306ecbc6172e0ebede1ba6ddeafde652eb3eab7c4daea89",
+          "manifest": "470184bbe6e484b713d29c971c95c46219a415f592559ac1da53ccab9641cf0a"
+        }
+      },
+      "roles": {
+        "reference": "A",
+        "candidate": "B"
+      },
+      "browser": "153.0.8010.12",
+      "pageMetadata": {
+        "A": {
+          "renderer": "ANGLE (Intel, Intel(R) UHD Graphics (0x0000A78B) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+          "timeOriginMs": 1791730335138.845,
+          "initialMemoryBytes": 134217728,
+          "initialPageCondition": {
+            "visibilityState": "visible",
+            "hasFocus": true
+          },
+          "activatePageBeforeBlocks": true
+        },
+        "B": {
+          "renderer": "ANGLE (Intel, Intel(R) UHD Graphics (0x0000A78B) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+          "timeOriginMs": 1791730341759.64,
+          "initialMemoryBytes": 134217728,
+          "initialPageCondition": {
+            "visibilityState": "visible",
+            "hasFocus": true
+          },
+          "activatePageBeforeBlocks": true
+        }
+      },
+      "groups": {
+        "base": {
+          "blocks": 40,
+          "metrics": {
+            "baseEightTicks": {
+              "reference": {
+                "count": 40,
+                "total": 1851.2200001478195,
+                "mean": 46.28050000369549,
+                "p50": 43.875,
+                "p95": 77.4200000166893,
+                "p99": 103.68500000238419,
+                "min": 17.030000030994415,
+                "max": 103.68500000238419
+              },
+              "candidate": {
+                "count": 40,
+                "total": 1845.744999885559,
+                "mean": 46.14362499713898,
+                "p50": 44.17999994754791,
+                "p95": 78.53999996185303,
+                "p99": 85.25,
+                "min": 22.62000000476837,
+                "max": 85.25
+              },
+              "totalChangePercent": -0.29575092435384365,
+              "candidateMinusReference": {
+                "count": 40,
+                "total": -5.475000262260437,
+                "mean": -0.13687500655651091,
+                "p50": 1.1600000262260437,
+                "p95": 25.164999961853027,
+                "p99": 40.64999997615814,
+                "min": -29.60499995946884,
+                "max": 40.64999997615814
+              },
+              "candidateCheaperPairs": 19,
+              "byExecutionOrder": {
+                "reference-first": {
+                  "count": 20,
+                  "referenceTotal": 957.2200001478195,
+                  "candidateTotal": 1036.7749999761581,
+                  "totalChangePercent": 8.311046553149048
+                },
+                "candidate-first": {
+                  "count": 20,
+                  "referenceTotal": 894,
+                  "candidateTotal": 808.9699999094009,
+                  "totalChangePercent": -9.511185692460744
+                }
+              }
+            }
+          }
+        },
+        "checkpoint": {
+          "blocks": 80,
+          "metrics": {
+            "capture": {
+              "reference": {
+                "count": 80,
+                "total": 495.28499960899353,
+                "mean": 6.191062495112419,
+                "p50": 5.680000007152557,
+                "p95": 12.365000009536743,
+                "p99": 14.679999947547913,
+                "min": 0.6649999618530273,
+                "max": 14.679999947547913
+              },
+              "candidate": {
+                "count": 80,
+                "total": 441.75499987602234,
+                "mean": 5.52193749845028,
+                "p50": 5.409999966621399,
+                "p95": 12.665000021457672,
+                "p99": 15.6700000166893,
+                "min": 0.25999999046325684,
+                "max": 15.6700000166893
+              },
+              "totalChangePercent": -10.807918627705437,
+              "candidateMinusReference": {
+                "count": 80,
+                "total": -53.52999973297119,
+                "mean": -0.6691249966621399,
+                "p50": -0.5699999928474426,
+                "p95": 5.905000030994415,
+                "p99": 8.355000019073486,
+                "min": -10.894999980926514,
+                "max": 8.355000019073486
+              },
+              "candidateCheaperPairs": 42,
+              "byExecutionOrder": {
+                "reference-first": {
+                  "count": 40,
+                  "referenceTotal": 250.2299997806549,
+                  "candidateTotal": 227.29999989271164,
+                  "totalChangePercent": -9.163569479296285
+                },
+                "candidate-first": {
+                  "count": 40,
+                  "referenceTotal": 245.05499982833862,
+                  "candidateTotal": 214.4549999833107,
+                  "totalChangePercent": -12.486992661428364
+                }
+              }
+            },
+            "forwardEightTicks": {
+              "reference": {
+                "count": 80,
+                "total": 2755.215000331402,
+                "mean": 34.44018750414252,
+                "p50": 35.014999985694885,
+                "p95": 62.42500001192093,
+                "p99": 101.82499998807907,
+                "min": 4.570000052452087,
+                "max": 101.82499998807907
+              },
+              "candidate": {
+                "count": 80,
+                "total": 2643.870000064373,
+                "mean": 33.04837500080466,
+                "p50": 34.5,
+                "p95": 61.87000000476837,
+                "p99": 91.68999999761581,
+                "min": 2.5,
+                "max": 91.68999999761581
+              },
+              "totalChangePercent": -4.041245429254559,
+              "candidateMinusReference": {
+                "count": 80,
+                "total": -111.34500026702881,
+                "mean": -1.39181250333786,
+                "p50": 0.5550000071525574,
+                "p95": 35.294999957084656,
+                "p99": 44.214999973773956,
+                "min": -80.9899999499321,
+                "max": 44.214999973773956
+              },
+              "candidateCheaperPairs": 39,
+              "byExecutionOrder": {
+                "reference-first": {
+                  "count": 40,
+                  "referenceTotal": 1371.515000283718,
+                  "candidateTotal": 1418.214999973774,
+                  "totalChangePercent": 3.4049937244868156
+                },
+                "candidate-first": {
+                  "count": 40,
+                  "referenceTotal": 1383.7000000476837,
+                  "candidateTotal": 1225.655000090599,
+                  "totalChangePercent": -11.42191226072402
+                }
+              }
+            },
+            "restore": {
+              "reference": {
+                "count": 80,
+                "total": 276.07499969005585,
+                "mean": 3.450937496125698,
+                "p50": 3.3600000143051147,
+                "p95": 8.319999992847443,
+                "p99": 12.230000019073486,
+                "min": 0.34999996423721313,
+                "max": 12.230000019073486
+              },
+              "candidate": {
+                "count": 80,
+                "total": 249.12999975681305,
+                "mean": 3.114124996960163,
+                "p50": 2.6299999952316284,
+                "p95": 7.165000021457672,
+                "p99": 14.875,
+                "min": 0.2250000238418579,
+                "max": 14.875
+              },
+              "totalChangePercent": -9.760028964409473,
+              "candidateMinusReference": {
+                "count": 80,
+                "total": -26.944999933242798,
+                "mean": -0.33681249916553496,
+                "p50": -0.5249999761581421,
+                "p95": 4.555000007152557,
+                "p99": 6.5200000405311584,
+                "min": -8.840000033378601,
+                "max": 6.5200000405311584
+              },
+              "candidateCheaperPairs": 47,
+              "byExecutionOrder": {
+                "reference-first": {
+                  "count": 40,
+                  "referenceTotal": 147.81999987363815,
+                  "candidateTotal": 125.75499993562698,
+                  "totalChangePercent": -14.926938138866952
+                },
+                "candidate-first": {
+                  "count": 40,
+                  "referenceTotal": 128.2549998164177,
+                  "candidateTotal": 123.37499982118607,
+                  "totalChangePercent": -3.8049198878926993
+                }
+              }
+            },
+            "resimEightTicks": {
+              "reference": {
+                "count": 80,
+                "total": 2538.0499997735023,
+                "mean": 31.72562499716878,
+                "p50": 31.474999964237213,
+                "p95": 61.764999985694885,
+                "p99": 68.375,
+                "min": 3.1299999952316284,
+                "max": 68.375
+              },
+              "candidate": {
+                "count": 80,
+                "total": 2461.9400000572205,
+                "mean": 30.774250000715256,
+                "p50": 30.02999997138977,
+                "p95": 55.50499999523163,
+                "p99": 94.48499995470047,
+                "min": 4.259999990463257,
+                "max": 94.48499995470047
+              },
+              "totalChangePercent": -2.9987588787878106,
+              "candidateMinusReference": {
+                "count": 80,
+                "total": -76.10999971628189,
+                "mean": -0.9513749964535236,
+                "p50": -0.5000000596046448,
+                "p95": 32.39999997615814,
+                "p99": 52.594999969005585,
+                "min": -46.16499996185303,
+                "max": 52.594999969005585
+              },
+              "candidateCheaperPairs": 42,
+              "byExecutionOrder": {
+                "reference-first": {
+                  "count": 40,
+                  "referenceTotal": 1386.1499999165535,
+                  "candidateTotal": 1163.9150002002716,
+                  "totalChangePercent": -16.032536141807196
+                },
+                "candidate-first": {
+                  "count": 40,
+                  "referenceTotal": 1151.8999998569489,
+                  "candidateTotal": 1298.0249998569489,
+                  "totalChangePercent": 12.685562984473208
+                }
+              }
+            },
+            "correction": {
+              "reference": {
+                "count": 80,
+                "total": 3309.4099990725517,
+                "mean": 41.367624988406895,
+                "p50": 40.14500004053116,
+                "p95": 73.43500000238419,
+                "p99": 78.66500002145767,
+                "min": 9.084999978542328,
+                "max": 78.66500002145767
+              },
+              "candidate": {
+                "count": 80,
+                "total": 3152.824999690056,
+                "mean": 39.4103124961257,
+                "p50": 39.90499997138977,
+                "p95": 67.9899999499321,
+                "p99": 96.91999995708466,
+                "min": 5.540000021457672,
+                "max": 96.91999995708466
+              },
+              "totalChangePercent": -4.7315080158208955,
+              "candidateMinusReference": {
+                "count": 80,
+                "total": -156.58499938249588,
+                "mean": -1.9573124922811984,
+                "p50": -2.705000102519989,
+                "p95": 33.2399999499321,
+                "p99": 51.269999980926514,
+                "min": -45.92999994754791,
+                "max": 51.269999980926514
+              },
+              "candidateCheaperPairs": 42,
+              "byExecutionOrder": {
+                "reference-first": {
+                  "count": 40,
+                  "referenceTotal": 1784.1999995708466,
+                  "candidateTotal": 1516.9700000286102,
+                  "totalChangePercent": -14.977580966624437
+                },
+                "candidate-first": {
+                  "count": 40,
+                  "referenceTotal": 1525.2099995017052,
+                  "candidateTotal": 1635.8549996614456,
+                  "totalChangePercent": 7.254410880855011
+                }
+              }
+            },
+            "totalMeasured": {
+              "reference": {
+                "count": 80,
+                "total": 6064.624999403954,
+                "mean": 75.80781249254942,
+                "p50": 71.85500001907349,
+                "p95": 118.15999990701675,
+                "p99": 140.47499990463257,
+                "min": 17.240000009536743,
+                "max": 140.47499990463257
+              },
+              "candidate": {
+                "count": 80,
+                "total": 5796.694999754429,
+                "mean": 72.45868749693037,
+                "p50": 71.22500002384186,
+                "p95": 116.1949999332428,
+                "p99": 129.48499995470047,
+                "min": 8.040000021457672,
+                "max": 129.48499995470047
+              },
+              "totalChangePercent": -4.417915364525548,
+              "candidateMinusReference": {
+                "count": 80,
+                "total": -267.9299996495247,
+                "mean": -3.3491249956190585,
+                "p50": -7.609999895095825,
+                "p95": 57.629999935626984,
+                "p99": 66.74999994039536,
+                "min": -76.4799998998642,
+                "max": 66.74999994039536
+              },
+              "candidateCheaperPairs": 46,
+              "byExecutionOrder": {
+                "reference-first": {
+                  "count": 40,
+                  "referenceTotal": 3155.7149998545647,
+                  "candidateTotal": 2935.185000002384,
+                  "totalChangePercent": -6.9882736515288535
+                },
+                "candidate-first": {
+                  "count": 40,
+                  "referenceTotal": 2908.909999549389,
+                  "candidateTotal": 2861.5099997520447,
+                  "totalChangePercent": -1.6294763263451584
+                }
+              }
+            }
+          },
+          "initialSnapshotBytes": {
+            "reference": {
+              "count": 80,
+              "total": 93030232,
+              "mean": 1162877.9,
+              "p50": 1163628,
+              "p95": 1323164,
+              "p99": 1348128,
+              "min": 1038064,
+              "max": 1348128
+            },
+            "candidate": {
+              "count": 80,
+              "total": 71315968,
+              "mean": 891449.6,
+              "p50": 893184,
+              "p95": 1059688,
+              "p99": 1068992,
+              "min": 772032,
+              "max": 1068992
+            },
+            "totalChangePercent": -23.34108335879459,
+            "limit": "Value immediately after Save; excludes later first writes and retained capacity"
+          }
+        }
+      },
+      "finalStatus": {
+        "A": {
+          "cursor": 1140,
+          "memoryBytes": 134217728,
+          "testErrors": []
+        },
+        "B": {
+          "cursor": 1140,
+          "memoryBytes": 134217728,
+          "testErrors": []
+        }
+      },
+      "hostLoadValid": true,
+      "identityStable": true
+    },
+    {
+      "path": "D:\\workspace\\eagler\\worktrees\\th09-journal-active-pools-4x\\th09_web\\artifacts\\multiplayer-tests\\journal-active-pools-paired4-swapped-c4-report.json",
+      "sha256": "f29fcfd07f6187799b93b02fd6d7b28f3312d6c9f56bde9971ee9a3fc3ab6a90",
+      "passed": true,
+      "parameters": {
+        "cpuRate": 4,
+        "hardwareRequested": true,
+        "hostLoad": true,
+        "activatePage": true,
+        "warmupFrames": 180,
+        "baseBlocks": 40,
+        "checkpointBlocks": 80,
+        "workload": "single-checkpoint",
+        "ticksPerBlock": 8,
+        "firstBaseFrame": 180,
+        "firstCheckpointFrame": 500,
+        "finalFrameExclusive": 1140,
+        "order": "AB for even measured block indices; BA for odd indices; no concurrent game work",
+        "inputPolicy": "Unchanged pc-cost-browser deterministic input sequence, openProbe(0,1,2,3)",
+        "renderPolicy": "Semantic Draw every tick; submit the eighth tick; unchanged probe geometry policy",
+        "checkpointPolicy": "One sparse checkpoint per eight-tick block, restore once, resimulate the same eight ticks"
+      },
+      "builds": {
+        "A": {
+          "id": "A",
+          "role": "reference",
+          "artifactDirectory": "D:\\workspace\\eagler\\worktrees\\th09-journal-active-pools-4x\\th09_web\\artifacts\\journal-active-pools-live-c1",
+          "wasm": "04f4c7086a427440911b6288a359212e5d936860500a462baf6c2308628c16e0",
+          "loader": "77c7f803234c5dbe4306ecbc6172e0ebede1ba6ddeafde652eb3eab7c4daea89",
+          "manifest": "470184bbe6e484b713d29c971c95c46219a415f592559ac1da53ccab9641cf0a"
+        },
+        "B": {
+          "id": "B",
+          "role": "candidate",
+          "artifactDirectory": "D:\\workspace\\eagler\\worktrees\\th09-mobile-rollback-4x\\th09_web\\artifacts\\mobile-rollback-live-matched",
+          "wasm": "f0fe104e03cf4c10617c16c8c08897784a83b02d5e8eeeabf8c2ee1e7e9e58cb",
+          "loader": "d6dfb6c40fd632bb748bc4a881e6f5dd1429aaa6de1cc4dade11ba82005da295",
+          "manifest": "897446c5628d5bbda6167f2f7fc9e57e4e4570ce16d14a4e244445938a083ae1"
+        }
+      },
+      "roles": {
+        "reference": "B",
+        "candidate": "A"
+      },
+      "browser": "153.0.8010.12",
+      "pageMetadata": {
+        "A": {
+          "renderer": "ANGLE (Intel, Intel(R) UHD Graphics (0x0000A78B) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+          "timeOriginMs": 1791730805987.955,
+          "initialMemoryBytes": 134217728,
+          "initialPageCondition": {
+            "visibilityState": "visible",
+            "hasFocus": true
+          },
+          "activatePageBeforeBlocks": true
+        },
+        "B": {
+          "renderer": "ANGLE (Intel, Intel(R) UHD Graphics (0x0000A78B) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+          "timeOriginMs": 1791730809637.88,
+          "initialMemoryBytes": 134217728,
+          "initialPageCondition": {
+            "visibilityState": "visible",
+            "hasFocus": true
+          },
+          "activatePageBeforeBlocks": true
+        }
+      },
+      "groups": {
+        "base": {
+          "blocks": 40,
+          "metrics": {
+            "baseEightTicks": {
+              "reference": {
+                "count": 40,
+                "total": 1607.5000000596046,
+                "mean": 40.187500001490115,
+                "p50": 37.80000001192093,
+                "p95": 65.06499999761581,
+                "p99": 108.02999997138977,
+                "min": 3.165000021457672,
+                "max": 108.02999997138977
+              },
+              "candidate": {
+                "count": 40,
+                "total": 1649.2399998307228,
+                "mean": 41.23099999576807,
+                "p50": 41.044999957084656,
+                "p95": 69.46499997377396,
+                "p99": 91.7849999666214,
+                "min": 13.354999959468842,
+                "max": 91.7849999666214
+              },
+              "totalChangePercent": 2.5965785237680006,
+              "candidateMinusReference": {
+                "count": 40,
+                "total": 41.739999771118164,
+                "mean": 1.0434999942779541,
+                "p50": 2.5199999809265137,
+                "p95": 29.084999978542328,
+                "p99": 41.004999935626984,
+                "min": -36.32499998807907,
+                "max": 41.004999935626984
+              },
+              "candidateCheaperPairs": 16,
+              "byExecutionOrder": {
+                "reference-first": {
+                  "count": 20,
+                  "referenceTotal": 797.5950000882149,
+                  "candidateTotal": 805.035000026226,
+                  "totalChangePercent": 0.9328042348796473
+                },
+                "candidate-first": {
+                  "count": 20,
+                  "referenceTotal": 809.9049999713898,
+                  "candidateTotal": 844.2049998044968,
+                  "totalChangePercent": 4.235064585885828
+                }
+              }
+            }
+          }
+        },
+        "checkpoint": {
+          "blocks": 80,
+          "metrics": {
+            "capture": {
+              "reference": {
+                "count": 80,
+                "total": 464.0150001645088,
+                "mean": 5.80018750205636,
+                "p50": 5.280000030994415,
+                "p95": 12.270000040531158,
+                "p99": 17.689999997615814,
+                "min": 0.6800000071525574,
+                "max": 17.689999997615814
+              },
+              "candidate": {
+                "count": 80,
+                "total": 409.8649997115135,
+                "mean": 5.123312496393919,
+                "p50": 4.2049999833106995,
+                "p95": 15.744999945163727,
+                "p99": 19.014999985694885,
+                "min": 0.574999988079071,
+                "max": 19.014999985694885
+              },
+              "totalChangePercent": -11.669881455081688,
+              "candidateMinusReference": {
+                "count": 80,
+                "total": -54.1500004529953,
+                "mean": -0.6768750056624413,
+                "p50": -1.2800000309944153,
+                "p95": 8.675000011920929,
+                "p99": 14.674999952316284,
+                "min": -10.35999995470047,
+                "max": 14.674999952316284
+              },
+              "candidateCheaperPairs": 54,
+              "byExecutionOrder": {
+                "reference-first": {
+                  "count": 40,
+                  "referenceTotal": 256.03500014543533,
+                  "candidateTotal": 205.57499986886978,
+                  "totalChangePercent": -19.708243110474278
+                },
+                "candidate-first": {
+                  "count": 40,
+                  "referenceTotal": 207.9800000190735,
+                  "candidateTotal": 204.28999984264374,
+                  "totalChangePercent": -1.774209143230765
+                }
+              }
+            },
+            "forwardEightTicks": {
+              "reference": {
+                "count": 80,
+                "total": 2773.28999966383,
+                "mean": 34.66612499579787,
+                "p50": 32.27999997138977,
+                "p95": 64.69999998807907,
+                "p99": 78.86000001430511,
+                "min": 11.6700000166893,
+                "max": 78.86000001430511
+              },
+              "candidate": {
+                "count": 80,
+                "total": 2547.07499986887,
+                "mean": 31.83843749836087,
+                "p50": 30.899999976158142,
+                "p95": 56.84999996423721,
+                "p99": 61.94499999284744,
+                "min": 2.1399999856948853,
+                "max": 61.94499999284744
+              },
+              "totalChangePercent": -8.156918310828697,
+              "candidateMinusReference": {
+                "count": 80,
+                "total": -226.21499979496002,
+                "mean": -2.827687497437,
+                "p50": -1.73499995470047,
+                "p95": 25.560000002384186,
+                "p99": 41.11500000953674,
+                "min": -63.060000002384186,
+                "max": 41.11500000953674
+              },
+              "candidateCheaperPairs": 45,
+              "byExecutionOrder": {
+                "reference-first": {
+                  "count": 40,
+                  "referenceTotal": 1530.9599999785423,
+                  "candidateTotal": 1327.7949998378754,
+                  "totalChangePercent": -13.27043163397571
+                },
+                "candidate-first": {
+                  "count": 40,
+                  "referenceTotal": 1242.3299996852875,
+                  "candidateTotal": 1219.2800000309944,
+                  "totalChangePercent": -1.855384612794686
+                }
+              }
+            },
+            "restore": {
+              "reference": {
+                "count": 80,
+                "total": 266.8049999475479,
+                "mean": 3.3350624993443487,
+                "p50": 2.8550000190734863,
+                "p95": 7.594999969005585,
+                "p99": 15.490000009536743,
+                "min": 0.2999999523162842,
+                "max": 15.490000009536743
+              },
+              "candidate": {
+                "count": 80,
+                "total": 208.4300000667572,
+                "mean": 2.605375000834465,
+                "p50": 2.314999997615814,
+                "p95": 5.9549999833106995,
+                "p99": 9.535000026226044,
+                "min": 0.19499999284744263,
+                "max": 9.535000026226044
+              },
+              "totalChangePercent": -21.879275085649386,
+              "candidateMinusReference": {
+                "count": 80,
+                "total": -58.37499988079071,
+                "mean": -0.7296874985098839,
+                "p50": -0.6150000095367432,
+                "p95": 2.4950000047683716,
+                "p99": 4.870000004768372,
+                "min": -10.750000059604645,
+                "max": 4.870000004768372
+              },
+              "candidateCheaperPairs": 50,
+              "byExecutionOrder": {
+                "reference-first": {
+                  "count": 40,
+                  "referenceTotal": 137.52999997138977,
+                  "candidateTotal": 120.33500003814697,
+                  "totalChangePercent": -12.502726631876582
+                },
+                "candidate-first": {
+                  "count": 40,
+                  "referenceTotal": 129.27499997615814,
+                  "candidateTotal": 88.09500002861023,
+                  "totalChangePercent": -31.854573548746966
+                }
+              }
+            },
+            "resimEightTicks": {
+              "reference": {
+                "count": 80,
+                "total": 2433.725000202656,
+                "mean": 30.4215625025332,
+                "p50": 31.035000026226044,
+                "p95": 50.36500000953674,
+                "p99": 56.605000019073486,
+                "min": 4.995000004768372,
+                "max": 56.605000019073486
+              },
+              "candidate": {
+                "count": 80,
+                "total": 2267.225000023842,
+                "mean": 28.340312500298023,
+                "p50": 27.419999957084656,
+                "p95": 50.92500001192093,
+                "p99": 68.2950000166893,
+                "min": 3.8700000047683716,
+                "max": 68.2950000166893
+              },
+              "totalChangePercent": -6.841364581657727,
+              "candidateMinusReference": {
+                "count": 80,
+                "total": -166.50000017881393,
+                "mean": -2.081250002235174,
+                "p50": -0.375,
+                "p95": 20.969999969005585,
+                "p99": 63.30000001192093,
+                "min": -36.22000002861023,
+                "max": 63.30000001192093
+              },
+              "candidateCheaperPairs": 43,
+              "byExecutionOrder": {
+                "reference-first": {
+                  "count": 40,
+                  "referenceTotal": 1205.954999923706,
+                  "candidateTotal": 1140.0899998545647,
+                  "totalChangePercent": -5.461646584931302
+                },
+                "candidate-first": {
+                  "count": 40,
+                  "referenceTotal": 1227.7700002789497,
+                  "candidateTotal": 1127.1350001692772,
+                  "totalChangePercent": -8.196567768133134
+                }
+              }
+            },
+            "correction": {
+              "reference": {
+                "count": 80,
+                "total": 3164.5450003147125,
+                "mean": 39.556812503933905,
+                "p50": 41.300000071525574,
+                "p95": 60.11500000953674,
+                "p99": 69.61000001430511,
+                "min": 8.634999990463257,
+                "max": 69.61000001430511
+              },
+              "candidate": {
+                "count": 80,
+                "total": 2885.5199998021126,
+                "mean": 36.068999997526404,
+                "p50": 34.72499996423721,
+                "p95": 58.579999923706055,
+                "p99": 77.18500000238419,
+                "min": 8.654999911785126,
+                "max": 77.18500000238419
+              },
+              "totalChangePercent": -8.817223344425539,
+              "candidateMinusReference": {
+                "count": 80,
+                "total": -279.02500051259995,
+                "mean": -3.4878125064074994,
+                "p50": -0.4350000023841858,
+                "p95": 22.55999994277954,
+                "p99": 68.55000001192093,
+                "min": -38.19499999284744,
+                "max": 68.55000001192093
+              },
+              "candidateCheaperPairs": 41,
+              "byExecutionOrder": {
+                "reference-first": {
+                  "count": 40,
+                  "referenceTotal": 1599.5200000405312,
+                  "candidateTotal": 1465.9999997615814,
+                  "totalChangePercent": -8.347504268503448
+                },
+                "candidate-first": {
+                  "count": 40,
+                  "referenceTotal": 1565.0250002741814,
+                  "candidateTotal": 1419.5200000405312,
+                  "totalChangePercent": -9.297295583658972
+                }
+              }
+            },
+            "totalMeasured": {
+              "reference": {
+                "count": 80,
+                "total": 5937.834999978542,
+                "mean": 74.22293749973178,
+                "p50": 71.37499994039536,
+                "p95": 117.97499990463257,
+                "p99": 148.47000002861023,
+                "min": 22.165000021457672,
+                "max": 148.47000002861023
+              },
+              "candidate": {
+                "count": 80,
+                "total": 5432.594999670982,
+                "mean": 67.90743749588728,
+                "p50": 67.95999997854233,
+                "p95": 105.51499998569489,
+                "p99": 122.60000002384186,
+                "min": 16.21499991416931,
+                "max": 122.60000002384186
+              },
+              "totalChangePercent": -8.50882519149464,
+              "candidateMinusReference": {
+                "count": 80,
+                "total": -505.24000030755997,
+                "mean": -6.3155000038445,
+                "p50": -4.425000011920929,
+                "p95": 30.704999923706055,
+                "p99": 80.61500000953674,
+                "min": -61.830000042915344,
+                "max": 80.61500000953674
+              },
+              "candidateCheaperPairs": 47,
+              "byExecutionOrder": {
+                "reference-first": {
+                  "count": 40,
+                  "referenceTotal": 3130.4800000190735,
+                  "candidateTotal": 2793.794999599457,
+                  "totalChangePercent": -10.755059940250867
+                },
+                "candidate-first": {
+                  "count": 40,
+                  "referenceTotal": 2807.354999959469,
+                  "candidateTotal": 2638.8000000715256,
+                  "totalChangePercent": -6.004050071700117
+                }
+              }
+            }
+          },
+          "initialSnapshotBytes": {
+            "reference": {
+              "count": 80,
+              "total": 93030232,
+              "mean": 1162877.9,
+              "p50": 1163628,
+              "p95": 1323164,
+              "p99": 1348128,
+              "min": 1038064,
+              "max": 1348128
+            },
+            "candidate": {
+              "count": 80,
+              "total": 71315968,
+              "mean": 891449.6,
+              "p50": 893184,
+              "p95": 1059688,
+              "p99": 1068992,
+              "min": 772032,
+              "max": 1068992
+            },
+            "totalChangePercent": -23.34108335879459,
+            "limit": "Value immediately after Save; excludes later first writes and retained capacity"
+          }
+        }
+      },
+      "finalStatus": {
+        "A": {
+          "cursor": 1140,
+          "memoryBytes": 134217728,
+          "testErrors": []
+        },
+        "B": {
+          "cursor": 1140,
+          "memoryBytes": 134217728,
+          "testErrors": []
+        }
+      },
+      "hostLoadValid": true,
+      "identityStable": true
+    }
+  ]
+}

@@ -1,0 +1,125 @@
+{
+  "schema": "th09/journal-release-new-state-gap/1",
+  "source": "D:\\workspace\\eagler\\worktrees\\th09-managed-touch-4x\\th09_web\\artifacts\\multiplayer-tests\\journal-active-pools-release-relay39-b1-report.json",
+  "rawSha256": "a4c35fbd70ec8a9294275beccdc1287b44ffc7d8108b4db338c4b94d1ff3724f",
+  "side": 1,
+  "gap": {
+    "fromSample": 394,
+    "toSample": 398,
+    "rafTimestampMs": 169.4900000000016,
+    "sampledAtMs": 159.89999997615814,
+    "frontierDelta": 1,
+    "nextDelta": 1,
+    "rendererSubmissions": 1,
+    "fromSessionPhase": 1,
+    "toSessionPhase": 1
+  },
+  "rows": [
+    {
+      "sampleIndex": 394,
+      "pageElapsedMs": 10009.780000030994,
+      "callbackWorkMs": 25.919999957084656,
+      "next": 357,
+      "corrections": 86,
+      "resimulated": 98,
+      "inputCaptures": 357,
+      "presentations": 357,
+      "phase": 1,
+      "rafTimestampMs": 19729.265,
+      "outstanding": 5,
+      "networkIntervalScale": 1,
+      "effectiveIntervalScale": 0.992,
+      "frontier": 357,
+      "firstMissingFrame": 352,
+      "frameDetails": [
+        357,
+        107
+      ]
+    },
+    {
+      "sampleIndex": 395,
+      "pageElapsedMs": 10071.585000038147,
+      "callbackWorkMs": 39.39000004529953,
+      "next": 353,
+      "corrections": 87,
+      "resimulated": 99,
+      "inputCaptures": 358,
+      "presentations": 357,
+      "phase": 1,
+      "rafTimestampMs": 19771.43,
+      "outstanding": 3,
+      "networkIntervalScale": 1.213,
+      "effectiveIntervalScale": 1.213,
+      "frontier": 357,
+      "firstMissingFrame": 354,
+      "frameDetails": [
+        353,
+        107
+      ]
+    },
+    {
+      "sampleIndex": 396,
+      "pageElapsedMs": 10119.060000002384,
+      "callbackWorkMs": 19.560000002384186,
+      "next": 355,
+      "corrections": 87,
+      "resimulated": 101,
+      "inputCaptures": 358,
+      "presentations": 357,
+      "phase": 1,
+      "rafTimestampMs": 19832.085,
+      "outstanding": 0,
+      "networkIntervalScale": 1,
+      "effectiveIntervalScale": 0.992,
+      "frontier": 357,
+      "firstMissingFrame": 358,
+      "frameDetails": [
+        355,
+        107
+      ]
+    },
+    {
+      "sampleIndex": 397,
+      "pageElapsedMs": 10141.75,
+      "callbackWorkMs": 9.310000002384186,
+      "next": 357,
+      "corrections": 87,
+      "resimulated": 103,
+      "inputCaptures": 358,
+      "presentations": 357,
+      "phase": 1,
+      "rafTimestampMs": 19880.455,
+      "outstanding": 0,
+      "networkIntervalScale": 1,
+      "effectiveIntervalScale": 0.992,
+      "frontier": 357,
+      "firstMissingFrame": 362,
+      "frameDetails": [
+        357,
+        107
+      ]
+    },
+    {
+      "sampleIndex": 398,
+      "pageElapsedMs": 10169.680000007153,
+      "callbackWorkMs": 11.105000019073486,
+      "next": 358,
+      "corrections": 87,
+      "resimulated": 103,
+      "inputCaptures": 358,
+      "presentations": 358,
+      "phase": 1,
+      "rafTimestampMs": 19898.755,
+      "outstanding": 0,
+      "networkIntervalScale": 1,
+      "effectiveIntervalScale": 0.992,
+      "frontier": 358,
+      "firstMissingFrame": 363,
+      "frameDetails": [
+        358,
+        107
+      ]
+    }
+  ],
+  "scope": "Largest B1 P2 new-state rAF interval; cumulative sample counters only. This is not a measurement of a single registered rAF wait or a GPU/CPU cause attribution."
+}

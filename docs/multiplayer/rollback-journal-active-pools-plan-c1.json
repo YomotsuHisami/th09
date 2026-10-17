@@ -1,0 +1,35 @@
+{
+  "schema": "th09/journal-active-pools-plan/1",
+  "createdAt": "2026-10-11T14:36:10.551Z",
+  "worktree": "D:/workspace/eagler/worktrees/th09-journal-active-pools-4x",
+  "head": "63127575d43ea5ef35b317ff8137b00a1ab5b1cc",
+  "change": "Capture complete active PlayerShot runs and complete cold slots before their first write; retain independent dense/hash inventory and original simulation.",
+  "baseline": {
+    "diagnostic": "D:/workspace/eagler/worktrees/th09-mobile-rollback-4x/th09_web/artifacts/mobile-rollback-live-matched",
+    "diagnosticWasm": "f0fe104e03cf4c10617c16c8c08897784a83b02d5e8eeeabf8c2ee1e7e9e58cb",
+    "release": "D:/workspace/eagler/worktrees/th09-mobile-rollback-4x/th09_web/artifacts/mobile-rollback-release-matched",
+    "releaseWasm": "037c9cd52e70e2c8e8ee516cf15b6aee7f0de5951f88d519b2311cc1c5def373"
+  },
+  "candidateDiagnosticWasm": "04f4c7086a427440911b6288a359212e5d936860500a462baf6c2308628c16e0",
+  "correctness": [
+    "WASI actual WorldState/PlayerShots exact complete bytes, density/cold creation/reset/1,2,8-depth/ring reuse",
+    "Matched diagnostic pair: exact checkpoint hash immediately after Restore, matching end-state hashes, full PNG and portable audits",
+    "Three real worlds: two predicting peers with per-frame checkpoints, forced depth 8 and third exact-input authority"
+  ],
+  "measurement": {
+    "componentCounts": "Actual complete shot slots and bytes, not a frame-rate estimate",
+    "diagnostic": "CPU4 same-input adjacent AB/BA, 80 one-checkpoint/eight-tick blocks; count capture+forward first writes+restore+resimulation. Initial 200-block c1 exceeded the 540-second wrapper limit. Instrumented c2 advanced through block 60 at about 3.76 seconds per checkpoint pair and was explicitly terminated because the unchanged batch would again exceed that fixed limit. Preserve both incomplete runs; reduce batch size only, retaining every oracle and pair in the new 80-block runs.",
+    "release": "Serial A/B/B/A on both headed desktop peers at CPU4, independent Page-clock continuous 120Hz joystick, D0/H8, relay39 +/-5ms; preserve adverse runs",
+    "acceptance": "Claim stage-specific measured improvement only when candidate beats repeated controls; no global FPS or rAF-freeze promise from copy counts alone"
+  },
+  "constraints": {
+    "onlyNig": true,
+    "noPhone": true,
+    "noConcurrentBuildAndGame": true,
+    "publish": false,
+    "simulationAndInputSemanticsUnchanged": true,
+    "normalPauseNotARepairTarget": true,
+    "stablePredictionBudgetProposalNotYetImplemented": true
+  },
+  "status": "implementation-and-correctness"
+}
