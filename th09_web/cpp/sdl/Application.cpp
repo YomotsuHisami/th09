@@ -556,7 +556,16 @@ u32 rollback_tick(u32 render){
         if(!network.active)rollback.FinishExactBoundary();
         record.hash=th09_network_hash();
         if(final||!network.active)break;
-        if(emscripten_get_now()-start>=8)break;
+        if(emscripten_get_now()-start>=8){
+            // When recovery has caught up, finish the one already-due forward
+            // tick before a later packet can rewind this frontier again. Keep
+            // input and lifecycle waits on the existing break/publish path.
+            const bool atFrontier=rollback.Frame()==rollback_catchup;
+            const bool activePlay=!probe->in_title&&probe->pending_action<0&&
+                !probe->paused&&!probe->over&&!probe->complete;
+            if(!atFrontier||!activePlay||rollback.NeedsCapture()||
+                !rollback.Prepare().canAdvance)break;
+        }
     }
     // Publish side effects and spectator input only from reconciled history.
     {
