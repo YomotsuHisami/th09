@@ -2,8 +2,8 @@
 // Event deadlines use Page performance.now, never game callbacks, captures or F.
 export const TOUCH_INPUT_SCHEMA='th09-touch-input-v1';
 
-export function buildTouchInputSchedule({profile='direct',sourceHz=60,durationMs=120000,side=0}={}){
- if(!['direct','joystick'].includes(profile)||![60,120].includes(sourceHz)||![0,1].includes(side)||
+export function buildTouchInputSchedule({profile='direct',sourceHz=60,durationMs=120000,side=0,pattern='lifecycle'}={}){
+ if(!['direct','joystick'].includes(profile)||!['lifecycle','continuous'].includes(pattern)||![60,120].includes(sourceHz)||![0,1].includes(side)||
     !Number.isFinite(durationMs)||durationMs<6000||durationMs>120000)throw Error('Invalid touch source configuration');
  const events=[],startMs=2500+137*side,periodMs=5200;
  const add=(atMs,kind,details={})=>{if(atMs<=durationMs)events.push({atMs,kind,...details,order:events.length});};
@@ -14,6 +14,36 @@ export function buildTouchInputSchedule({profile='direct',sourceHz=60,durationMs
   for(let k=Math.floor(a*sourceHz/1000)+1;k*1000/sourceHz<b-1e-7;++k)emit(k*1000/sourceHz);
   emit(b);
  };
+ if(pattern==='continuous'){
+  const legMs=1200,route=[0,1,2,3,0,3,2,1,0],epoch=1;
+  const points=profile==='direct'?[[.42,.64],[.58,.64],[.58,.76],[.42,.76]]:
+   [[.65,-.3],[.3,.65],[-.65,.3],[-.3,-.65]];
+  const point=(at,xy,label,type=1)=>add(at,profile==='direct'?'pointer':'stick',{
+   ...(profile==='direct'?{type,id:71+side}:{}),x:xy[0],y:xy[1],epoch,label});
+  let endpoint=points[0];
+  for(let leg=0;startMs+leg*legMs<durationMs;++leg){
+   const t=startMs+leg*legMs,i=leg%(route.length-1),from=points[route[i]],to=points[route[i+1]];
+   const fire=leg%4===3?0:1,focus=leg%2;
+   add(t,'controls',{fire,focus,label:fire?(focus?'fire-focus':'fire-fast'):'fire-off'});
+   // Native controls clear stick axes. Reassert the boundary point immediately,
+   // outside MOVE coalescing, without lifting or creating another gesture.
+   point(t,from,leg===0?'contact':'turn',leg===0?0:1);
+   move(t,t+legMs,from,to,epoch,'continuous-leg-'+leg);
+   const u=Math.min(1,(durationMs-t)/legMs);
+   endpoint=from.map((value,axis)=>value+(to[axis]-value)*u);
+  }
+  // Finish a partial grid interval at its actual interpolated position. Do not
+  // accelerate the last leg or leave a held gesture/vector after its deadline.
+  if(events.at(-1).atMs<durationMs)point(durationMs,endpoint,'end-move');
+  point(durationMs,profile==='direct'?endpoint:[0,0],'end-up',2);
+  add(durationMs,'cancel',{epoch,label:'end-cancel'});
+  add(durationMs,'controls',{fire:0,focus:0,label:'end-neutral'});
+  events.sort((a,b)=>a.atMs-b.atMs||a.order-b.order);
+  if(events.length>20000)throw Error('Touch schedule exceeds bounded event capacity');
+  return {schema:TOUCH_INPUT_SCHEMA,profile,sourceHz,durationMs,side,startMs,periodMs:legMs*(route.length-1),sensitivity:1.5,
+   pattern,cadence:'Absolute Page-clock grid throughout one held gesture; leg/control edges and terminal neutral retain their own deadlines.',
+   events:events.map(({order,...e},sequence)=>({sequence,...e}))};
+ }
  for(let cycle=0;startMs+cycle*periodMs<=durationMs;++cycle){
   const t=startMs+cycle*periodMs,epoch=cycle*3+1;
   const contact=(at,e)=>add(at,profile==='direct'?'pointer':'stick',profile==='direct'?

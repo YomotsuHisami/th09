@@ -22,7 +22,8 @@ const flags=['-std=c++17','-O2','-g','-ffp-contract=off','-fno-exceptions',
 const sha=b=>createHash('sha256').update(b).digest('hex');
 const headers=dir=>readdirSync(dir,{withFileTypes:true}).flatMap(e=>e.isDirectory()?headers(resolve(dir,e.name)):
   /\.(hpp|h|inc)$/.test(e.name)?[resolve(dir,e.name)]:[]);
-const headerInputs=[...headers(resolve(root,'cpp/multiplayer')),...headers(resolve(root,'cpp/game')),...headers(resolve(common,'include'))];
+const headerInputs=[...headers(resolve(root,'cpp/multiplayer')),...headers(resolve(root,'cpp/game')),...headers(resolve(common,'include')),
+  resolve(root,'../portable/input/TouchController.hpp')];
 const headerHashes=Object.fromEntries(headerInputs.map(p=>[p,sha(readFileSync(p))]));
 function compile(args){
   const result=spawnSync(compiler,args,{encoding:'utf8',windowsHide:true});
@@ -32,9 +33,13 @@ function compile(args){
 const suites={
   'image-resample':[resolve(root,'cpp/game/ImageResample.cpp')],
   'graphics-projection':[resolve(root,'cpp/game/GraphicsMath.cpp')],
+  'sprite-subpixel':[resolve(root,'cpp/game/AnmRenderer.cpp')],
   'audio-pitch':[],
   'frame-schedule':[],
   'spectator-schedule':[],
+  'spectator-playback':[],
+  'round-bootstrap':[resolve(root,'cpp/game/MatchRules.cpp'),resolve(root,'cpp/game/Rng.cpp')],
+  'touch-controller':[],
   session:[resolve(root,'cpp/multiplayer/RollbackSession.cpp'),
     ...['NetplayCore','NetplayProtocol','NetplaySession','SessionChannel'].map(n=>resolve(common,'src/netplay',n+'.cpp'))],
   adonis:[resolve(root,'cpp/multiplayer/RollbackSession.cpp'),
@@ -54,10 +59,10 @@ for(const [suite,implementation] of Object.entries(suites)){
   if(requested.length&&!requested.includes(suite))continue;
   const wasm=resolve(out,suite+'.wasm');
   const sources=[resolve(root,'tests/multiplayer',suite+'.cpp'),...implementation];
-  // These suites include the shared wire/model fixture without compiling it
-  // twice. Retain that transitive C++ source in their provenance record.
-  const sourceInputs=['adonis','mobile-prediction'].includes(suite)
-    ? [...sources,resolve(root,'tests/multiplayer/session.cpp')] : sources;
+  // Included fixtures are not compiled twice; retain their transitive C++ input.
+  const sourceInputs=[...sources];
+  if(['adonis','mobile-prediction'].includes(suite))sourceInputs.push(resolve(root,'tests/multiplayer/session.cpp'));
+  if(suite==='touch-controller')sourceInputs.push(resolve(root,'../portable/input/touch-bomb-check.cpp'));
   // RTTI is a test oracle for dynamic-type preservation only. Production
   // implementations and all attack constructors are checked without it below.
   compile([...flags,...(suite==='session'?['-fno-rtti']:[]),'-Wl,-z,stack-size=1048576',...sources,'-o',wasm]);

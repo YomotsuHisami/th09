@@ -1,11 +1,12 @@
 // Short offline contracts. These do not run a browser or claim touch performance.
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
 import test from 'node:test';
 import vm from 'node:vm';
 import {buildTouchInputSchedule,installTouchInputProbe} from './touch-input-probe.mjs';
 
-function fixture({profile='direct',sourceHz=120,durationMs=12000,enabled=true}={}){
- const plan=buildTouchInputSchedule({profile,sourceHz,durationMs,side:0}),calls=[],timers=new Map();
+function fixture({profile='direct',sourceHz=120,durationMs=12000,enabled=true,side=0,pattern='lifecycle'}={}){
+ const plan=buildTouchInputSchedule({profile,sourceHz,durationMs,side,pattern}),calls=[],timers=new Map();
  let now=0,nextTimer=1,positionReads=0;const heap=new ArrayBuffer(1024);
  const core={HEAPU8:new Uint8Array(heap),HEAP32:new Int32Array(heap),HEAPU32:new Uint32Array(heap),
   _th09_rollback_info:()=>0,_th09_adonis_info:()=>64,_th09_game_metrics:()=>128,
@@ -44,6 +45,87 @@ test('profiles have explicit lifecycle edges and independent 60/120 Hz schedules
  const joystick=buildTouchInputSchedule({profile:'joystick',durationMs:12000});
  assert.ok(joystick.events.some(e=>e.kind==='stick'&&e.x===0&&e.y===0));
  assert.throws(()=>buildTouchInputSchedule({sourceHz:61}),/configuration/);
+});
+
+test('default lifecycle JSON retains the frozen plans and adds no pattern field',()=>{
+ // Frozen tasks-c1 raw SHA c19307e11c86183f3d6816078814a7da6cc091874ec77990cdd16bfdc42adb54;
+ // identity.touchInputSchedules hashes JSON.stringify(plan), joystick/120 Hz/120000 ms.
+ const expected=['27a768f892f4eaf3d4683bfb05e56fda58e380d8e8cb3804354ef09d76096e4b',
+  'd7274cf59c3b961129a91e32c41a8b558118c4eca6ff0684669ecdbd3feeebc0'];
+ for(const side of [0,1]){
+  const plan=buildTouchInputSchedule({profile:'joystick',sourceHz:120,durationMs:120000,side});
+  assert.equal(createHash('sha256').update(JSON.stringify(plan)).digest('hex'),expected[side]);
+ }
+ for(const profile of ['direct','joystick'])for(const sourceHz of [60,120])for(const side of [0,1]){
+  const options={profile,sourceHz,side,durationMs:12000},plan=buildTouchInputSchedule(options);
+  assert.equal(JSON.stringify(plan),JSON.stringify(buildTouchInputSchedule({...options,pattern:'lifecycle'})));
+  assert.equal(Object.hasOwn(plan,'pattern'),false);
+ }
+ const f=fixture();f.probe.start(f.core,0);assert.equal(Object.hasOwn(f.probe.snapshot().configuration,'pattern'),false);
+ assert.throws(()=>buildTouchInputSchedule({pattern:'unknown'}),/configuration/);
+ assert.throws(()=>installTouchInputProbe({plan:{schema:'th09-touch-input-v1',events:Array(20001)}}),/Invalid touch probe plan/);
+});
+
+test('continuous schedules cover both frequencies and sides without stationary lifecycle gaps',()=>{
+ for(const profile of ['direct','joystick'])for(const sourceHz of [60,120])for(const side of [0,1])
+  for(const durationMs of [12007.5,120000]){
+   const plan=buildTouchInputSchedule({profile,sourceHz,side,durationMs,pattern:'continuous'}),events=plan.events;
+   assert.equal(plan.pattern,'continuous');assert.equal(plan.startMs,2500+137*side);assert.equal(plan.periodMs,9600);
+   assert.ok(events.length<=20000);assert.ok(events.every((e,i)=>e.sequence===i&&(!i||e.atMs>=events[i-1].atMs)&&e.atMs<=durationMs));
+   const moving=events.filter(e=>e.kind==='pointer'&&e.type!==2||e.kind==='stick'&&(e.x!==0||e.y!==0));
+   assert.equal(moving[0].atMs,plan.startMs);assert.equal(moving.at(-1).atMs,durationMs);
+   assert.equal(moving.filter(e=>e.label==='contact').length,1);
+   const directions=[new Set(),new Set()];
+   for(let i=0;i<moving.length;++i){
+    const e=moving[i];assert.equal(e.epoch,1);assert.ok(Number.isFinite(e.x)&&Number.isFinite(e.y));
+    if(profile==='direct')assert.ok(e.x>=0&&e.x<=1&&e.y>=0&&e.y<=1);
+    else assert.ok(Math.abs(e.x)<=.65+1e-12&&Math.abs(e.y)<=.65+1e-12&&Math.hypot(e.x,e.y)>.45);
+    if(i){assert.ok(e.atMs-moving[i-1].atMs<=1000/sourceHz+1e-6,'No missing moving grid interval');
+     directions[0].add(Math.sign(e.x-moving[i-1].x));directions[1].add(Math.sign(e.y-moving[i-1].y));}
+   }
+   for(const axis of directions)assert.ok(axis.has(-1)&&axis.has(1),'The trajectory must turn on both axes');
+   const beforeEnd=events.filter(e=>e.atMs<durationMs),controls=beforeEnd.filter(e=>e.kind==='controls');
+   assert.ok(beforeEnd.every(e=>e.kind!=='marker'&&e.kind!=='cancel'&&!(e.kind==='pointer'&&e.type===2)&&!(e.kind==='stick'&&e.x===0&&e.y===0)));
+   assert.deepEqual([...new Set(controls.map(e=>e.fire))].sort(),[0,1]);
+   assert.deepEqual([...new Set(controls.map(e=>e.focus))].sort(),[0,1]);
+   for(const e of controls){const next=events[e.sequence+1];
+    assert.equal(next.atMs,e.atMs);assert.equal(next.kind,profile==='direct'?'pointer':'stick');
+    assert.equal(next.coalesceKey,undefined);assert.ok(next.label==='contact'||next.label==='turn');
+    if(profile==='joystick')assert.ok(next.x!==0||next.y!==0,'Controls must reassert their cleared stick axes');
+   }
+   assert.deepEqual(events.slice(-3).map(e=>e.label),['end-up','end-cancel','end-neutral']);
+   assert.ok(events.slice(-3).every(e=>e.atMs===durationMs));
+   const release=events.at(-3),neutral=events.at(-1);
+   if(profile==='direct'){assert.equal(release.type,2);assert.equal(release.x,moving.at(-1).x);assert.equal(release.y,moving.at(-1).y);}
+   else {assert.equal(release.x,0);assert.equal(release.y,0);}
+   assert.equal(neutral.fire,0);assert.equal(neutral.focus,0);
+  }
+});
+
+test('late continuous source coalesces only a single leg and preserves every control and turn edge',()=>{
+ for(const profile of ['direct','joystick']){
+  const f=fixture({profile,pattern:'continuous'});f.probe.start(f.core,0);f.advance(8000);
+  const p=f.probe.snapshot();assert.equal(p.valid,true);assert.equal(p.configuration.pattern,'continuous');
+  assert.ok(p.counts.coalescedMoves>0);assert.equal(f.positionReads(),0);assert.equal(p.limits.commandsPerWake,64);
+  assert.ok(p.events.filter(e=>!e.coalesceKey).every(e=>e.submittedAtMs!==undefined));
+  for(const range of p.source.coalescedRanges){const rows=f.plan.events.slice(range.firstSequence,range.lastSequence+1);
+   assert.ok(rows.length>0&&rows.every(e=>e.coalesceKey&&e.coalesceKey===rows[0].coalesceKey));
+   assert.ok(rows.every(e=>e.kind===(profile==='direct'?'pointer':'stick')));
+  }
+ }
+});
+
+test('continuous deadline releases native input without a game callback or extra position sampling',()=>{
+ for(const profile of ['direct','joystick']){
+  const f=fixture({profile,pattern:'continuous',durationMs:6007.5});f.probe.start(f.core,0);
+  for(const at of new Set(f.plan.events.map(e=>e.atMs)))f.advance(at);
+  const p=f.probe.snapshot();assert.equal(p.valid,true);assert.equal(p.source.sourceExhausted,true);
+  assert.equal(p.counts.notSubmitted,0);assert.equal(p.counts.futureCensoredEvents,0);assert.equal(f.timers.size,0);assert.equal(f.positionReads(),0);
+  assert.deepEqual(f.calls.slice(-2).map(c=>c.name),['_th09_touch_cancel','_th09_touch_controls']);
+  assert.deepEqual(f.calls.at(-1).args,[1,0,0,0,0]);
+  if(profile==='direct')assert.equal(f.calls.filter(c=>c.name==='_th09_touch').at(-1).args[0],2);
+  else assert.deepEqual(f.calls.filter(c=>c.name==='_th09_touch_stick').at(-1).args,[0,0]);
+ }
 });
 test('disabled installation adds no probe and no timer',()=>{
  const f=fixture({enabled:false});assert.equal(f.probe,undefined);assert.equal(f.timers.size,0);assert.equal(f.calls.length,0);
@@ -87,8 +169,11 @@ test('unknown protocol version is recorded as invalid evidence',()=>{
  const p=f.probe.snapshot();assert.equal(p.valid,false);assert.equal(p.counts.actualInputFrames,0);assert.match(p.errors[0],/v4/);
 });
 test('very late source stops at the command cap and preserves remaining unsubmitted rows',()=>{
- const f=fixture({durationMs:120000});f.probe.start(f.core,0);f.advance(120000);
- const p=f.probe.snapshot();assert.equal(p.valid,false);assert.ok(p.errors.some(e=>/command cap/.test(e)));
- assert.ok(p.counts.notSubmitted>0);assert.equal(f.timers.size,0);
+ for(const pattern of ['lifecycle','continuous']){
+  const f=fixture({durationMs:120000,pattern});f.probe.start(f.core,0);f.advance(120000);
+  const p=f.probe.snapshot();assert.equal(p.valid,false);assert.ok(p.errors.some(e=>/command cap/.test(e)));
+  assert.equal(p.limits.commandsPerWake,64);assert.equal(p.limits.events,20000);
+  assert.ok(p.counts.notSubmitted>0);assert.equal(f.timers.size,0);
+ }
 });
 

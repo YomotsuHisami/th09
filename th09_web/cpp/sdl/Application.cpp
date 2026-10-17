@@ -16,6 +16,7 @@
 #include "../multiplayer/RollbackSession.hpp"
 #include "../multiplayer/FrameSchedule.hpp"
 #include "../multiplayer/SpectatorSchedule.hpp"
+#include "../multiplayer/SpectatorPlayback.hpp"
 #include <dirent.h>
 #include <ctime>
 #include <algorithm>
@@ -32,6 +33,11 @@ EM_JS(void, th09_reset_browser_keyboard, (), {Module["resetBrowserKeyboard"]?.()
 Netplay::PeerTransport& th09_shared_transport();
 EM_JS(void, th09_browser_frame, (int ok,double milliseconds), { Module["onGameFrame"]?.(ok,milliseconds); });
 EM_JS(void, th09_network_result, (), { Module["onNetworkResult"]?.(); });
+EM_JS(void, th09_network_spectator_begin, (std::uint32_t frame,const void* bytes,std::uint32_t size), {
+    Module["onNetworkSpectatorBegin"]?.(frame,HEAPU8.slice(bytes,bytes+size));
+});
+EM_JS(void, th09_network_spectator_end, (std::uint32_t frame,int winner), { Module["onNetworkSpectatorEnd"]?.(frame,winner); });
+EM_JS(void, th09_network_spectator_round, (std::uint32_t frame,std::uint32_t round), { Module["onNetworkSpectatorRound"]?.(frame,round); });
 EM_JS(void, th09_network_request, (), { Module["onNetworkRequest"]?.(); });
 EM_JS(void, th09_network_send, (unsigned frame,unsigned keys,int moving,float x,float y), { Module["onNetworkInput"]?.(frame,keys,moving,x,y); });
 EM_JS(void, th09_network_spectator_frame,
@@ -64,10 +70,22 @@ bool rollback_active=false;
 Netplay::AdonisMode adonis_mode=Netplay::AdonisMode::Rollback;
 u32 adonis_snapshots=0,adonis_waits=0;
 u32 rollback_published=0,rollback_catchup=0;
+// ABI-bound start initializer: scalar RNG and menu edges, no owning state,
+// resource addresses, pointers, or containers. Retry uses the same room config.
+struct SpectatorBeginState { Rng random; InputFrame menu; };
+static_assert(std::is_trivially_copyable_v<SpectatorBeginState>);
+static_assert(offsetof(SpectatorBeginState,menu)==sizeof(Rng));
+constexpr u32 spectator_begin_bytes=sizeof(Rng)+sizeof(InputFrame); // exclude tail padding
+SpectatorBeginState spectator_begin_buffer;
+bool spectator_after_restart=false;
 struct RollbackFrame {
     u32 number=Netplay::INVALID_FRAME,hash=0;
     std::unique_ptr<multiplayer::WorldState> state;
     bool captured=false;
+    bool hasBegin=false,hasEnd=false;
+    i32 winner=-1;
+    i32 round=-1;
+    SpectatorBeginState begin;
     struct Sound {i32 kind,id;float value;};
     std::vector<Sound> sounds;
 };
@@ -81,6 +99,7 @@ bool probe_full_sprite_geometry=false;
 struct SpectatorFrame { u32 frame=0;u16 keys[2]{};NetworkInput::Motion motion[2]; };
 std::deque<SpectatorFrame> spectator_frames;
 bool spectator_mode=false;
+multiplayer::SpectatorPlayback spectator_playback;
 u32 spectator_next=0,spectator_simulated=0;
 u32 spectator_last_ticks=0,spectator_max_ticks=0,spectator_yields=0,spectator_max_work_us=0;
 struct Application final:GameMedia,InGameMenuServices,TitleServices,EndingServices {
@@ -161,8 +180,8 @@ struct Application final:GameMedia,InGameMenuServices,TitleServices,EndingServic
         if(!presentation.ascii.initialize()){error="ASCII initialization failed";return false;}paused=over=complete=false;menus.pause={};menus.game_over={};menus.match_end={};requested_transition=-1;return true;
     }
     bool render_text(AnmVm& a,const char* s,u32 color,u32 shadow)override{TH09_PERF_SCOPE(text_cost,TextRender);if(!fonts.text(a,s,color,shadow)){error=fonts.error;return false;}return true;}
-    void sound(i32 id,i32 pan)override{if(!queue_sound(0,id,float(pan)))audio.effects.enqueue(id,pan);}
-    void positioned_sound(i32 id,float x)override{if(!queue_sound(1,id,x))audio.effects.positioned(id,x);}
+    void sound(i32 id,i32 pan)override{if(spectator_mode&&spectator_playback.seeking)return;if(!queue_sound(0,id,float(pan)))audio.effects.enqueue(id,pan);}
+    void positioned_sound(i32 id,float x)override{if(spectator_mode&&spectator_playback.seeking)return;if(!queue_sound(1,id,x))audio.effects.positioned(id,x);}
     void music(i32 n)override{if(queue_sound(2,n))return;if(!audio.music(n))error=audio.error;else if(const auto* entry=music_track(n))if(!session||!session->is_replay)records.music_unlocked[entry->unlock]=1;}
     void fade_music()override{if(!queue_sound(3,0))audio.fade_music();}
     void encountered(i32 c)override{if(!queue_sound(5,c)&&(!session||!session->is_replay))records.count_encounter(c);}
@@ -242,13 +261,14 @@ struct Application final:GameMedia,InGameMenuServices,TitleServices,EndingServic
     void ending_sprite(AnmVm& vm)override{presentation.renderer.draw_2d(vm);}
     void ending_cover(u32 color)override{presentation.renderer.rectangle(0,0,640,480,color,color);}
     bool tick(u16 keys){return tick_inputs(keys,0,keys);}
-    bool tick_inputs(u16 left,u16 right,u16 keys,bool render=true){
+    bool tick_inputs(u16 left,u16 right,u16 keys,bool render=true,bool afterRestart=false){
         TH09_PERF_SCOPE(tick_cost,TickInputs);
 #if TH09_DEVELOPMENT_HARNESS
         const double cost_begin=emscripten_get_now();
 #endif
         if(in_title)return tick_title(left,right,keys,render);if(!session||!world||!error.empty())return false;
         TH09_PERF_SCOPE(update_cost,Update);
+        if(!afterRestart){
         update_clocks();device.update(keys);mode=world->rules.mode;difficulty=world->configuration.selection.difficulty;game_flags=world->battle->state.flags;continues=session->continues;
         PopupFrame popup;popup.paused=paused;popup.game_over=over;popup.game_flags=game_flags;for(i32 s=0;s<2;++s)popup.field_flags[s]=world->battle->fields[s].script.flags;presentation.ascii.update(popup);
         if(paused)menus.update_pause(device);else if(over)menus.update_game_over(device);else if(complete)menus.update_match_end(device);else if(!session->is_demo()&&(device.pressed&8)&&session->phase==SessionPhase::match){paused=world->paused=true;sound(34,0);pause_audio(true);}
@@ -257,9 +277,14 @@ struct Application final:GameMedia,InGameMenuServices,TitleServices,EndingServic
             // the driver's read-only lifetime barrier. Never rewind freed owners.
             if(recording_frame&&recording_frame->captured){error="Speculative menu resource action";return false;}
             const auto action=InGameAction(pending_action);pending_action=-1;
-            if(action==InGameAction::retry||action==InGameAction::replay_retry||action==InGameAction::restart_extra){presentation.renderer.flush();if(!session->retry()){error=session->error;return false;}world=session->world.get();presentation.world=world;paused=over=complete=false;menus.pause={};menus.game_over={};menus.match_end={};pause_audio(false);}
+            if(action==InGameAction::retry||action==InGameAction::replay_retry||action==InGameAction::restart_extra){
+                if(network.active&&network.side==0){const SpectatorBeginState begin{state.random,device};
+                    if(recording_frame){recording_frame->begin=begin;recording_frame->hasBegin=true;}
+                    else th09_network_spectator_begin(network.frame()-1,&begin,spectator_begin_bytes);}
+                presentation.renderer.flush();if(!session->retry()){error=session->error;return false;}world=session->world.get();presentation.world=world;paused=over=complete=false;menus.pause={};menus.game_over={};menus.match_end={};pause_audio(false);}
             else if(action==InGameAction::continue_match){pause_audio(true);if(!session->continue_game()){error="Unable to continue";return false;}paused=over=complete=false;pause_audio(false);}
             else {session->finish();return return_title(action==InGameAction::save_score);}
+        }
         }
         if(!paused&&!over&&!complete){presentation.renderer.flush();if(!session->update(left,right,keys)){error=session->error;return false;}world=session->world.get();presentation.world=world;}
         over=session->phase==SessionPhase::game_over;complete=session->phase==SessionPhase::match_complete;
@@ -440,11 +465,11 @@ TH09_EXPORT("th09_rollback_info") const u32* th09_rollback_info(){
 }
 TH09_EXPORT("th09_spectator_begin") u32 th09_spectator_begin(u32 seed,u32 difficulty,u32 left,u32 right){
     if(!th09_network_room_begin(seed,0,0xffff,difficulty,0,left,right))return 0;
-    spectator_last_ticks=spectator_max_ticks=spectator_yields=spectator_max_work_us=0;
+    spectator_playback={};spectator_last_ticks=spectator_max_ticks=spectator_yields=spectator_max_work_us=0;
     if(!probe->tick_title(0,0,0,false)||probe->in_title)return 0;network.end();spectator_frames.clear();spectator_next=spectator_simulated=0;spectator_mode=true;return 1;
 }
 TH09_EXPORT("th09_spectator_feed") u32 th09_spectator_feed(u32 frame,u32 left,u32 right,u32 leftMode,float leftX,float leftY,u32 rightMode,float rightX,float rightY){
-    if(!spectator_mode||frame!=spectator_next||left>65535||right>65535||spectator_frames.size()>=8192)return 0;
+    if(!spectator_mode||frame!=spectator_next||left>65535||right>65535||spectator_frames.size()>=multiplayer::SpectatorPlayback::Capacity)return 0;
     const auto motion=[](u32 mode,float x,float y,NetworkInput::Motion& out){
         const bool target=mode==NetworkInput::MotionTarget||mode==NetworkInput::MotionTargetUnlimited;
         const float limit=target?4096.f:16.f;
@@ -456,6 +481,37 @@ TH09_EXPORT("th09_spectator_feed") u32 th09_spectator_feed(u32 frame,u32 left,u3
     spectator_frames.push_back(packet);++spectator_next;return 1;
 }
 TH09_EXPORT("th09_spectator_frame") u32 th09_spectator_frame(){return spectator_simulated;}
+TH09_EXPORT("th09_spectator_control") u32 th09_spectator_control(u32 action,u32 frame){
+    if(!spectator_mode||!spectator_playback.Control(action,frame,spectator_simulated,spectator_next))return 0;
+    if(probe)probe->audio.suspend(spectator_playback.paused);
+    return 1;
+}
+TH09_EXPORT("th09_spectator_finish") u32 th09_spectator_finish(u32 frame){
+    if(!spectator_mode||frame!=spectator_next)return 0;spectator_playback.ended=true;return 1;
+}
+TH09_EXPORT("th09_spectator_begin_buffer") void* th09_spectator_begin_buffer(){return &spectator_begin_buffer;}
+TH09_EXPORT("th09_confirmed_frame_hash") const u32* th09_confirmed_frame_hash(u32 frame){
+    static u32 data[2];const auto& record=rollback_frames[frame%rollback_frames.size()];
+    data[0]=record.number==frame?frame:Netplay::INVALID_FRAME;data[1]=record.number==frame?record.hash:0;return data;
+}
+TH09_EXPORT("th09_spectator_restart") u32 th09_spectator_restart(u32 frame,u32 size){
+    if(!spectator_mode||!probe||!probe->session||size!=spectator_begin_bytes||frame<spectator_next)return 0;
+    probe->presentation.renderer.flush();probe->state.random=spectator_begin_buffer.random;
+    if(!probe->session->retry()){probe->error=probe->session->error;return 0;}
+    probe->world=probe->session->world.get();probe->presentation.world=probe->world;
+    probe->device=spectator_begin_buffer.menu;probe->paused=probe->over=probe->complete=false;
+    probe->pending_action=-1;probe->requested_transition=-1;probe->menus.pause={};probe->menus.game_over={};probe->menus.match_end={};
+    spectator_frames.clear();spectator_next=spectator_simulated=frame;spectator_playback={};
+    spectator_playback.roundStart=spectator_playback.target=frame;spectator_after_restart=true;
+    probe->audio.suspend(false);return 1;
+}
+TH09_EXPORT("th09_spectator_playback_info") const u32* th09_spectator_playback_info(){
+    static u32 data[11];data[0]=1;data[1]=spectator_simulated;data[2]=spectator_next;
+    data[3]=spectator_playback.Limit(spectator_next);data[4]=spectator_playback.target;
+    data[5]=spectator_playback.paused;data[6]=spectator_playback.seeking;
+    data[7]=spectator_playback.following;data[8]=spectator_playback.roundStart;data[9]=spectator_playback.round;
+    data[10]=spectator_playback.ended;return data;
+}
 TH09_EXPORT("th09_spectator_info") const u32* th09_spectator_info(){
     static u32 data[8];data[0]=1;data[1]=spectator_next;data[2]=spectator_simulated;data[3]=u32(spectator_frames.size());
     data[4]=spectator_last_ticks;data[5]=spectator_max_ticks;data[6]=spectator_yields;data[7]=spectator_max_work_us;return data;
@@ -543,13 +599,19 @@ u32 rollback_tick(u32 render){
         record.captured=speculative;
         if(speculative){if(!record.state)record.state=std::make_unique<multiplayer::WorldState>();if(!probe->checkpoint(*record.state)){probe->error="Rollback world capture failed";return 0;}probe->graphics.checkpoint=record.state.get();}
         // Retain arena capacity across exact and speculative frames.
-        recording_frame=&record;
+        record.hasBegin=record.hasEnd=false;record.round=-1;recording_frame=&record;
         if(probe->session&&!probe->in_title)for(unsigned side=0;side<2;++side){const auto& in=decision.inputs[side];probe->session->motion_input[side]={in.analogMode!=Netplay::AnalogMode::None,in.x,in.y,in.unlimited,in.analogMode==Netplay::AnalogMode::DirectTouch};}
         // Recovery does not consume the wall-clock tick's forward step. Replay
         // through the old frontier, then capture/simulate its new input once.
         const bool final=f>=rollback_catchup;
         TH09_PERF_COUNT(ForwardTicks,final?1:0);TH09_PERF_COUNT(ReplayTicks,final?0:1);TH09_PERF_COUNT(SpeculativeTicks,speculative?1:0);
+        const bool wasComplete=probe->complete;
+        const auto priorRoundFrames=probe->world?probe->world->rules.progress.round_frames:0;
         const auto ok=probe->tick_inputs(decision.inputs[0].buttons,decision.inputs[1].buttons,decision.inputs[0].buttons|decision.inputs[1].buttons,render&&final);
+        if(!record.hasBegin&&probe->world&&probe->world->rules.progress.round_frames<priorRoundFrames&&probe->world->rules.progress.round>0)
+            record.round=probe->world->rules.progress.round;
+        record.hasEnd=!wasComplete&&probe->complete;
+        if(record.hasEnd)record.winner=probe->world->scene->winner;
         recording_frame=nullptr;probe->graphics.checkpoint=nullptr;
         if(record.captured){if(!record.state->Seal()){probe->error="Rollback checkpoint seal failed";return 0;}TH09_PERF_COUNT(SealedCheckpoints,1);}
         if(!ok||!rollback.Complete(decision)){if(ok)probe->error=rollback.Error();return 0;}
@@ -568,7 +630,11 @@ u32 rollback_tick(u32 render){
         TH09_PERF_COUNT(PublishedCommands,record.sounds.size());
         for(const auto& s:record.sounds)switch(s.kind){case 0:TH09_PERF_COUNT(PublishedSfx,1);probe->audio.effects.enqueue(s.id,i32(s.value));break;case 1:TH09_PERF_COUNT(PublishedSfx,1);probe->audio.effects.positioned(s.id,s.value);break;case 2:TH09_PERF_COUNT(PublishedMusic,1);probe->music(s.id);break;case 3:TH09_PERF_COUNT(PublishedOtherAudio,1);probe->audio.fade_music();break;case 4:TH09_PERF_COUNT(PublishedOtherAudio,1);probe->audio.pause_music(s.id!=0);break;case 5:probe->encountered(s.id);break;case 6:probe->defeated(s.id);break;}
         record.sounds.clear();
-        if(network.side==0){std::array<Netplay::FrameInput,Netplay::MAX_PLAYERS> in;if(!rollback.ConfirmedInputs(rollback_published,&in))return 0;const auto mode=[](const Netplay::FrameInput& i){return i.analogMode==Netplay::AnalogMode::None?0:i.analogMode==Netplay::AnalogMode::Joystick?1:i.unlimited?3:2;};th09_network_spectator_frame(rollback_published,in[0].buttons,in[1].buttons,mode(in[0]),in[0].x,in[0].y,mode(in[1]),in[1].x,in[1].y);}
+        if(network.side==0){std::array<Netplay::FrameInput,Netplay::MAX_PLAYERS> in;if(!rollback.ConfirmedInputs(rollback_published,&in))return 0;const auto mode=[](const Netplay::FrameInput& i){return i.analogMode==Netplay::AnalogMode::None?0:i.analogMode==Netplay::AnalogMode::Joystick?1:i.unlimited?3:2;};
+            if(record.hasBegin)th09_network_spectator_begin(rollback_published,&record.begin,spectator_begin_bytes);
+            th09_network_spectator_frame(rollback_published,in[0].buttons,in[1].buttons,mode(in[0]),in[0].x,in[0].y,mode(in[1]),in[1].x,in[1].y);
+            if(record.round>0)th09_network_spectator_round(rollback_published+1,u32(record.round));
+            if(record.hasEnd)th09_network_spectator_end(rollback_published+1,record.winner);}
         if(network.active&&(rollback_published+1)%120==0&&!rollback.Verify(rollback_published+1,record.hash)){probe->error=rollback.Error();return 0;}
         ++rollback_published;
         TH09_PERF_COUNT(PublishedFrames,1);
@@ -580,17 +646,25 @@ u32 rollback_tick(u32 render){
 u32 spectator_tick(u32 render,u32 dueTicks=1){
         spectator_last_ticks=0;
         if(spectator_frames.empty())return 2;
-        const auto count=multiplayer::SpectatorSchedule::Plan(spectator_frames.size(),dueTicks);
+        const bool fast=spectator_playback.Fast(spectator_simulated,spectator_next);
+        const auto available=spectator_playback.Available(spectator_simulated,spectator_next);
+        const auto count=fast?available:std::min(available,std::min(multiplayer::SpectatorSchedule::MaxTicks,std::min(dueTicks,4u)));
+        if(!count)return 2;
         const double began=emscripten_get_now();u32 ok=1;
         for(u32 n=0;n<count&&ok&&!spectator_frames.empty();++n){
-            if(!multiplayer::SpectatorSchedule::CanStart(n,emscripten_get_now()-began)){++spectator_yields;break;}
+            if(!multiplayer::SpectatorSchedule::CanStart(n,emscripten_get_now()-began,fast)){++spectator_yields;break;}
             const auto packet=spectator_frames.front();spectator_frames.pop_front();
             if(packet.frame!=spectator_simulated)return 0;
             const bool was_title=probe->in_title;
+            const auto priorRoundFrames=probe->world?probe->world->rules.progress.round_frames:0;
+            const auto priorSessionFrames=probe->session?probe->session->frames:0;
             if(!was_title&&probe->session)for(i32 s=0;s<2;++s)probe->session->motion_input[s]={packet.motion[s].enabled,packet.motion[s].x,packet.motion[s].y,packet.motion[s].unlimited,packet.motion[s].target};
             const bool prior=rollback_active;rollback_active=true;
-            ok=probe->tick_inputs(packet.keys[0],packet.keys[1],u16(packet.keys[0]|packet.keys[1]),render!=0&&multiplayer::SpectatorSchedule::Render(n,count));
+            ok=probe->tick_inputs(packet.keys[0],packet.keys[1],u16(packet.keys[0]|packet.keys[1]),render!=0&&multiplayer::SpectatorSchedule::Render(n,count),spectator_after_restart);
+            spectator_after_restart=false;
             rollback_active=prior;++spectator_simulated;++spectator_last_ticks;
+            if(probe->world&&probe->session&&(probe->world->rules.progress.round_frames<priorRoundFrames||probe->session->frames<priorSessionFrames))
+                spectator_playback.Boundary(spectator_simulated,u32(probe->world->rules.progress.round));
             if(!was_title&&probe->in_title){spectator_mode=false;spectator_frames.clear();break;}
         }
         spectator_max_ticks=std::max(spectator_max_ticks,spectator_last_ticks);
@@ -601,9 +675,14 @@ TH09_EXPORT("th09_game_tick") u32 th09_game_tick(u32 render){TH09_PERF_SCOPE(gam
     if(spectator_mode)return spectator_tick(render);
     if(rollback_active&&network.active)return rollback_tick(render);
     if(network.active){if(network.wants_input()){sample_keys(keys);const u32 frame=network.sending_frame();const auto m=probe->session&&!probe->in_title?probe->session->motion_input[network.side]:GameSession::MotionSample{};const u8 mode=!m.enabled?NetworkInput::MotionNone:m.target?(m.unlimited?NetworkInput::MotionTargetUnlimited:NetworkInput::MotionTarget):NetworkInput::MotionVelocity;if(!network.submit(network.side,frame,keys[2],mode,m.x,m.y))return 0;th09_network_send(frame,keys[2],i32(mode),m.x,m.y);}if(network.failed){probe->error="Network input order invalid";return 0;}NetworkInput::Motion motion[2];const u32 frame=network.frame();const bool publisher=network.side==0;if(!network.take(keys,motion))return 2;if(probe->session)for(i32 s=0;s<2;++s)probe->session->motion_input[s]={motion[s].enabled,motion[s].x,motion[s].y,motion[s].unlimited,motion[s].target};
+        const bool wasComplete=probe->complete;
+        const auto priorRoundFrames=probe->world?probe->world->rules.progress.round_frames:0;
         const u32 ok=probe->tick_inputs(keys[0],keys[1],keys[2],render!=0);
         if(ok&&publisher){const auto mode=[](const NetworkInput::Motion& m){return !m.enabled?0:m.target?(m.unlimited?3:2):1;};
-            th09_network_spectator_frame(frame,keys[0],keys[1],mode(motion[0]),motion[0].x,motion[0].y,mode(motion[1]),motion[1].x,motion[1].y);}
+            th09_network_spectator_frame(frame,keys[0],keys[1],mode(motion[0]),motion[0].x,motion[0].y,mode(motion[1]),motion[1].x,motion[1].y);
+            if(probe->world&&probe->world->rules.progress.round_frames<priorRoundFrames&&probe->world->rules.progress.round>0)
+                th09_network_spectator_round(frame+1,u32(probe->world->rules.progress.round));
+            if(!wasComplete&&probe->complete)th09_network_spectator_end(frame+1,probe->world->scene->winner);}
         return ok;}
     sample_keys(keys);u32 ok=1;for(u32 extra=0;extra<3&&ok;++extra){ok=probe->tick_inputs(keys[0],keys[1],keys[2],false);if(!ok||probe->in_title||probe->paused||probe->over||probe->complete||!probe->session->is_replay||probe->session->phase!=SessionPhase::match||probe->session->playback_schedule()!=6)break;}if(ok&&render)probe->draw();return ok;
 }
@@ -622,9 +701,9 @@ TH09_EXPORT("th09_loop_start") void th09_loop_start(){
         // consuming it on a retry would silently discard the correction.
         const auto elapsed=active&&!cadence.retry_pending()?rollback.PacedElapsedMs(delta*1000)/1000/rollback.IntervalScale():delta;
         const auto ticks=cadence.advance(elapsed,active);u32 ok=1;
-        if(spectator_mode&&ticks){
+        if(spectator_mode&&(ticks||(spectator_playback.seeking&&!spectator_playback.paused))){
             // Flatten the old four outer ticks x four inner steps. One shared
-            // 6-step/8ms start budget owns this callback; pending inputs remain.
+            // Fast-forward has no tick cap; the 8ms start budget yields to UI.
             ok=spectator_tick(1,ticks);
             if(ok==2)cadence.blocked(false);else cadence.complete();
         }else for(u32 n=0;n<ticks&&ok;++n){

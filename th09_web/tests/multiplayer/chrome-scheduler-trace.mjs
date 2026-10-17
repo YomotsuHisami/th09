@@ -4,12 +4,17 @@ import { createHash } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 
-export const CHROME_SCHEDULER_TRACE_CATEGORIES=Object.freeze(['toplevel','renderer.scheduler','cc','viz','gpu','blink.user_timing']);
+export const CHROME_SCHEDULER_TRACE_PROFILES=Object.freeze({
+  pipeline:Object.freeze(['toplevel','renderer.scheduler','cc','viz','gpu','blink.user_timing']),
+  tasks:Object.freeze(['toplevel','renderer.scheduler','blink.user_timing']),
+  graphics:Object.freeze(['gpu','viz','blink.user_timing'])
+});
+export const CHROME_SCHEDULER_TRACE_CATEGORIES=CHROME_SCHEDULER_TRACE_PROFILES.pipeline;
+export const CHROME_SCHEDULER_TRACE_BUFFER_HIGH_WATER=0.80;
 export const CHROME_SCHEDULER_TRACE_LIMITS=Object.freeze({events:350000,sanitizedBytes:96*1024*1024,bufferUsage:128,marks:8,errors:32,
   names:2048,threads:1024,durationMs:90000,commandTimeoutMs:5000,completionTimeoutMs:30000,pageTimeoutMs:5000});
 const STAGES=Object.freeze(['armed','first-active','capture-stop']);
 const MARKS=Object.freeze(Object.fromEntries(STAGES.map(x=>[x,'th09-sched-'+x])));
-const CATEGORIES=new Set(CHROME_SCHEDULER_TRACE_CATEGORIES);
 const PHASES=new Set(['B','E','X','I','i','C','S','T','F','b','n','e','s','t','f','M','R','N','O','D']);
 const NAMES=new Set([...Object.values(MARKS),'process_name','thread_name',
   'ThreadControllerImpl::RunTask','ThreadControllerImpl::DoWork','ThreadControllerImpl::RunTaskImpl',
@@ -32,7 +37,7 @@ const THREAD_NAMES=new Set(['CrBrowserMain','CrRendererMain','CrGpuMain','Chrome
   'Compositor','VizCompositorThread','CompositorGpuThread','GpuMemoryThread','GpuWatchdog','AudioThread',
   'ThreadPoolForegroundWorker','ThreadPoolBackgroundWorker','ThreadPoolServiceThread','VideoCaptureThread',
   'CompositorTileWorker1','CompositorTileWorker2','CompositorTileWorker3','CompositorTileWorker4']);
-const STOP_REASONS=new Set(['capture-stop','failure','deadline','local-overflow','chrome-buffer-full','start-failed']);
+const STOP_REASONS=new Set(['capture-stop','failure','deadline','local-overflow','chrome-buffer-full','buffer-high-water','start-failed']);
 const ERROR_NAMES=new Set(['Error','TypeError','RangeError','TimeoutError','ProtocolError']);
 const RESERVED_SNAPSHOT_BYTES=64*1024;
 const hash=value=>createHash('sha256').update(value).digest('hex');
@@ -62,9 +67,10 @@ export function chromeSchedulerTracePageOperation(action){
   return window[key]?.snapshot()??null;
 }
 
-function makeCollector(limits,now,onLimit){
+function makeCollector(limits,now,onLimit,selectedCategories){
   const events=[],bufferUsage=[],marks=[],errors=[],unknownNames=new Map(),threads=new Map();
-  const categoryCounts=Object.fromEntries(CHROME_SCHEDULER_TRACE_CATEGORIES.map(x=>[x,0]));
+  const categorySet=new Set(selectedCategories);
+  const categoryCounts=Object.fromEntries(selectedCategories.map(x=>[x,0]));
   const counts={batches:0,rawEvents:0,retainedEvents:0,droppedEvents:0,droppedFields:0,malformedEvents:0,
     retainedDataJsonBytes:0,unknownEventNames:0,errors:0};
   const overflow={events:0,bytes:0,bufferUsage:0,marks:0,errors:0,names:0,threads:0,firstAt:null,firstTraceTs:null};
@@ -93,7 +99,7 @@ function makeCollector(limits,now,onLimit){
   function addThread(pid,tid,cats){
     const key=pid+':'+tid;let row=threads.get(key);
     if(!row){if(threads.size>=limits.threads){overflowAt('threads');return;}
-      row={pid,tid,count:0,categories:Object.fromEntries(CHROME_SCHEDULER_TRACE_CATEGORIES.map(c=>[c,0]))};
+      row={pid,tid,count:0,categories:Object.fromEntries(selectedCategories.map(c=>[c,0]))};
       if(!retain(row,'threads'))return;threads.set(key,row);}
     ++row.count;for(const cat of cats)++row.categories[cat];
   }
@@ -102,9 +108,9 @@ function makeCollector(limits,now,onLimit){
       !integer(raw.pid)||!integer(raw.tid)||!finite(raw.ts)||raw.ts<0||!PHASES.has(raw.ph)){
       ++counts.malformedEvents;++counts.droppedEvents;return;
     }
-    const parts=raw.cat.split(','),cats=CHROME_SCHEDULER_TRACE_CATEGORIES.filter(c=>parts.includes(c));
+    const parts=raw.cat.split(','),cats=selectedCategories.filter(c=>parts.includes(c));
     const metadata=raw.ph==='M'&&['process_name','thread_name'].includes(raw.name);
-    for(const c of parts)if(!CATEGORIES.has(c)&&c!=='__metadata')named('category',c);
+    for(const c of parts)if(!categorySet.has(c)&&c!=='__metadata')named('category',c);
     if(!cats.length&&!metadata){++counts.droppedEvents;return;}
     const row={cat:metadata?'__metadata':cats.join(','),ph:raw.ph,ts:raw.ts,pid:raw.pid,tid:raw.tid};
     if(NAMES.has(raw.name))row.name=raw.name;
@@ -140,7 +146,10 @@ function makeCollector(limits,now,onLimit){
   function buffer(message){
     const row={at:now()};for(const key of ['percentFull','eventCount','value'])if(finite(message?.[key]))row[key]=message[key];
     if(bufferUsage.length>=limits.bufferUsage)overflowAt('bufferUsage');else if(retain(row,'bufferUsage'))bufferUsage.push(row);
-    if((finite(row.percentFull)&&row.percentFull>=1)||(finite(row.value)&&row.value>=1))onLimit('chrome-buffer-full');
+    // A rounded value below 1 can already be a saturated recordUntilFull plateau.
+    const fraction=Math.max(finite(row.percentFull)?row.percentFull:0,finite(row.value)?row.value:0);
+    if(fraction>=1)onLimit('chrome-buffer-full',row);
+    else if(fraction>=CHROME_SCHEDULER_TRACE_BUFFER_HIGH_WATER)onLimit('buffer-high-water',row);
   }
   function page(state){
     if(!state||state.version!==1||state.installConflict||!Array.isArray(state.marks)){error('page-marker-state-unavailable');return;}
@@ -185,6 +194,9 @@ function mapClock(marks,events){
 // The second argument injects clocks/files for pure mocks; limits may only be reduced.
 export async function startChromeSchedulerTrace(options={},runtime={}){
   const enabled=options.enabled===true;
+  const requestedProfile=options.profile??'pipeline';
+  const profile=typeof requestedProfile==='string'&&Object.hasOwn(CHROME_SCHEDULER_TRACE_PROFILES,requestedProfile)?requestedProfile:null;
+  const selectedCategories=profile?CHROME_SCHEDULER_TRACE_PROFILES[profile]:[];
   const limits={...CHROME_SCHEDULER_TRACE_LIMITS};
   for(const [key,value] of Object.entries(runtime.limits??{})){
     if(!Object.hasOwn(limits,key)||!integer(value)||value<1||value>limits[key])throw new Error('Invalid scheduler trace test limit');
@@ -194,17 +206,23 @@ export async function startChromeSchedulerTrace(options={},runtime={}){
   const read=runtime.readFile??readFileSync;
   const config={transferMode:'ReportEvents',bufferUsageReportingInterval:1000,tracingBackend:'chrome',
     traceConfig:{recordMode:'recordUntilFull',traceBufferSizeInKb:32768,enableSampling:false,enableSystrace:false,
-      enableArgumentFilter:true,includedCategories:[...CHROME_SCHEDULER_TRACE_CATEGORIES]}};
+      enableArgumentFilter:true,includedCategories:[...selectedCategories]}};
   const availability={available:false,reason:enabled?'not-started':'disabled',missingCategories:[],product:null};
   const sourceIdentity={before:null,after:null,stable:false};
   const capture={nodeStartedAt:null,nodeStopRequestedAt:null,nodeEndRequestedAt:null,nodeCompletedAt:null,nodeStoppedAt:null,
-    reason:null,deadlineFired:false,chromeBufferFull:false,tracingCompleteReceived:false,dataLossOccurred:null,endRequests:0};
+    reason:null,deadlineFired:false,chromeBufferFull:false,bufferHighWater:false,
+    bufferHighWaterThreshold:CHROME_SCHEDULER_TRACE_BUFFER_HIGH_WATER,firstBufferHighWater:null,censored:false,
+    tracingCompleteReceived:false,dataLossOccurred:null,endRequests:0};
   let status=enabled?'initializing':'disabled',session,started=false,pageInstalled=false,deadlineTimer,finalSnapshot,stopPromise,endPromise;
   let resolveComplete;const completePromise=new Promise(resolve=>{resolveComplete=resolve;});
-  const c=makeCollector(limits,now,reason=>{
+  const c=makeCollector(limits,now,(reason,bufferRow)=>{
     if(reason==='chrome-buffer-full')capture.chromeBufferFull=true;
+    if(reason==='chrome-buffer-full'||reason==='buffer-high-water'){
+      capture.bufferHighWater=true;capture.censored=true;
+      capture.firstBufferHighWater??={...bufferRow};
+    }
     if(started)void stop(reason);
-  });
+  },selectedCategories);
   function identities(){
     const result={};
     for(const [name,path] of [['helper',fileURLToPath(import.meta.url)],['harness',options.sourceFiles?.harness]]){
@@ -223,20 +241,26 @@ export async function startChromeSchedulerTrace(options={},runtime={}){
     if(finalSnapshot)return finalSnapshot;
     const clock=mapClock(c.marks,c.events);
     const collectionValid=started&&capture.tracingCompleteReceived&&capture.dataLossOccurred===false&&
-      !capture.chromeBufferFull&&!c.hasOverflow()&&c.counts.errors===0&&c.counts.malformedEvents===0&&sourceIdentity.stable&&status==='stopped';
+      !capture.chromeBufferFull&&!capture.bufferHighWater&&!c.hasOverflow()&&c.counts.errors===0&&c.counts.malformedEvents===0&&sourceIdentity.stable&&status==='stopped';
     const ordered=STAGES.every((stage,i)=>{
       const m=c.marks.find(x=>x.stage===stage),prev=i?c.marks.find(x=>x.stage===STAGES[i-1]):null;
       return m&&(i===0||prev&&m.before>=prev.after);
     });
     const allThree=STAGES.every(stage=>clock.matches.some(m=>m.stage===stage&&m.uniqueCandidateCount===1));
-    return {version:1,enabled,status,side:[0,1].includes(options.side)?options.side:null,
-      scope:'Owned Chrome only; post-open/post-CPU setup through active gameplay. Scheduler/GPU wall spans are not CPU self time, hardware GPU execution time, or physical scanout. No V8, system, network, payload, screenshot, or raw trace storage.',
+    return {version:1,enabled,status,profile,side:[0,1].includes(options.side)?options.side:null,
+      scope:profile==='tasks'
+        ?'Owned Chrome only; fixed task/scheduler/user-timing categories, without compositor or GPU categories. Task wall spans are not CPU self time; missing events do not prove idle. No V8, system, network, payload, screenshot, or raw trace storage.'
+        :profile==='graphics'
+        ?'Owned Chrome only; fixed GPU/viz/user-timing categories, without toplevel, renderer.scheduler or cc coverage. GPU/viz wall spans are not CPU self time, hardware GPU execution time, or physical scanout; missing events do not prove idle. No V8, system, network, payload, screenshot, or raw trace storage.'
+        :'Owned Chrome only; post-open/post-CPU setup through active gameplay. Scheduler/GPU wall spans are not CPU self time, hardware GPU execution time, or physical scanout. No V8, system, network, payload, screenshot, or raw trace storage.',
       availability:{...availability},collectionValid,config,limits:{...limits},counts:{...c.counts},overflow:{...c.overflow},errors:c.errors,
       sourceIdentity,clock,marks:c.marks,bufferUsage:c.bufferUsage,capture:{...capture},events:c.events,
-      coverage:{clockMapped:clock.clockMapped,allThreeMarks:allThree,marksOrdered:ordered,
-        activeWindowCovered:collectionValid&&clock.clockMapped&&allThree&&ordered&&!capture.deadlineFired,
-        categories:{...c.categoryCounts},schedulerObserved:c.categoryCounts['toplevel']>0&&c.categoryCounts['renderer.scheduler']>0,
-        compositorObserved:c.categoryCounts.cc>0&&c.categoryCounts.viz>0,gpuObserved:c.categoryCounts.gpu>0,
+      coverage:{clockMapped:clock.clockMapped,allThreeMarks:allThree,marksOrdered:ordered,requestedCategories:[...selectedCategories],
+        activeWindowCovered:collectionValid&&clock.clockMapped&&allThree&&ordered&&!capture.deadlineFired&&!capture.censored,
+        categories:{...c.categoryCounts},schedulerObserved:selectedCategories.includes('toplevel')&&selectedCategories.includes('renderer.scheduler')
+          ?c.categoryCounts['toplevel']>0&&c.categoryCounts['renderer.scheduler']>0:null,
+        compositorObserved:selectedCategories.includes('cc')&&selectedCategories.includes('viz')?c.categoryCounts.cc>0&&c.categoryCounts.viz>0:null,
+        gpuObserved:selectedCategories.includes('gpu')?c.categoryCounts.gpu>0:null,
         renderer:clock.renderer,threads:[...c.threads.values()],unknownNames:[...c.unknownNames.values()],
         limitation:'No events is not evidence of idle. Match the retained complete time window to existing rAF requests; a non-reproduced stall is not a repair.'},
       storage:{rawTraceWritten:false,reservedMetadataBytes:RESERVED_SNAPSHOT_BYTES,
@@ -273,7 +297,7 @@ export async function startChromeSchedulerTrace(options={},runtime={}){
     if(stopPromise)return stopPromise;
     const why=STOP_REASONS.has(reason)?reason:'failure';
     if(!started){status=enabled?'unavailable':'disabled';finalSnapshot=snapshot();return Promise.resolve(finalSnapshot);}
-    capture.nodeStopRequestedAt=now();capture.reason=why;status='stopping';
+    capture.nodeStopRequestedAt=now();capture.reason=why;capture.censored||=why!=='capture-stop';status='stopping';
     stopPromise=(async()=>{
       try{
       // Deadline/end never waits for a busy page. Normal final marking is bounded by the deadline too.
@@ -300,6 +324,7 @@ export async function startChromeSchedulerTrace(options={},runtime={}){
     status='unavailable';finalSnapshot=snapshot();return controller;
   }
   if(!enabled)return controller;
+  if(profile===null)return unavailable('unsupported-profile');
   if(!Array.isArray(options.ownedBrowsers)||!options.ownedBrowsers.includes(options.browser))return unavailable('browser-not-owned');
   try{
     if(options.browser?.browserType()?.name()!=='chromium')return unavailable('browser-not-chromium');
@@ -315,14 +340,14 @@ export async function startChromeSchedulerTrace(options={},runtime={}){
   availability.product=version.value.product;
   const categories=await command('Tracing.getCategories');
   if(!categories.ok||!Array.isArray(categories.value?.categories))return unavailable('categories-unavailable');
-  availability.missingCategories=CHROME_SCHEDULER_TRACE_CATEGORIES.filter(c=>!categories.value.categories.includes(c));
+  availability.missingCategories=selectedCategories.filter(c=>!categories.value.categories.includes(c));
   if(availability.missingCategories.length)return unavailable('required-categories-missing');
   session.on('Tracing.dataCollected',c.data);session.on('Tracing.bufferUsage',c.buffer);session.on('Tracing.tracingComplete',onComplete);
   const began=await command('Tracing.start',config);
   if(!began.ok)return unavailable('tracing-start-failed');
   started=true;capture.nodeStartedAt=now();
   deadlineTimer=schedule(()=>{
-    capture.deadlineFired=true;void requestEnd();void stop('deadline');
+    capture.deadlineFired=true;capture.censored=true;void requestEnd();void stop('deadline');
   },limits.durationMs);deadlineTimer?.unref?.();
   const installed=await bounded(()=>options.page.evaluate(chromeSchedulerTracePageOperation,'install'),'page-marker-install',limits.pageTimeoutMs);
   if(installed.ok){c.page(installed.value);pageInstalled=installed.value?.version===1&&!installed.value.installConflict;}

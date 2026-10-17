@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { createContext, runInContext } from 'node:vm';
-import { startChromeSchedulerTrace,CHROME_SCHEDULER_TRACE_CATEGORIES,CHROME_SCHEDULER_TRACE_LIMITS } from './chrome-scheduler-trace.mjs';
+import { startChromeSchedulerTrace,CHROME_SCHEDULER_TRACE_CATEGORIES,CHROME_SCHEDULER_TRACE_PROFILES,CHROME_SCHEDULER_TRACE_BUFFER_HIGH_WATER,CHROME_SCHEDULER_TRACE_LIMITS } from './chrome-scheduler-trace.mjs';
 
 const flush=async()=>{for(let i=0;i<20;++i)await Promise.resolve();};
 function fixture(config={}){
@@ -78,9 +78,12 @@ test('ownership and actual Chrome capability reject without broadening or starti
     await p.stop();assert.equal(h.stats().gameChanges,0);assert.equal(h.timers.size,0);
   }
 });
-test('strict six-category chrome config, ordered markers, calibrated clock and idempotent stop',async()=>{
+test('default pipeline preserves six categories, ordered markers, calibrated clock and idempotent stop',async()=>{
   const h=fixture(),p=await h.start();assert.equal(p.snapshot().status,'recording');
   const start=h.calls.find(x=>x.method==='Tracing.start').params;
+  assert.deepEqual(CHROME_SCHEDULER_TRACE_CATEGORIES,['toplevel','renderer.scheduler','cc','viz','gpu','blink.user_timing']);
+  assert.strictEqual(CHROME_SCHEDULER_TRACE_CATEGORIES,CHROME_SCHEDULER_TRACE_PROFILES.pipeline);
+  assert.equal(p.snapshot().profile,'pipeline');
   assert.deepEqual(start,{transferMode:'ReportEvents',bufferUsageReportingInterval:1000,tracingBackend:'chrome',traceConfig:{
     recordMode:'recordUntilFull',traceBufferSizeInKb:32768,enableSampling:false,enableSystrace:false,enableArgumentFilter:true,
     includedCategories:[...CHROME_SCHEDULER_TRACE_CATEGORIES]}});
@@ -93,6 +96,135 @@ test('strict six-category chrome config, ordered markers, calibrated clock and i
   assert.equal(s.sourceIdentity.stable,true);assert.equal(h.calls.filter(x=>x.method==='Tracing.end').length,1);
   assert.equal(h.stats().detachCount,1);assert.equal(h.stats().gameChanges,0);assert.equal(h.timers.size,0);assert.equal(await p.stop(),s);
 });
+
+test('tasks profile requires only its fixed categories and filters other pipeline events',async()=>{
+  const wanted=['toplevel','renderer.scheduler','blink.user_timing'];
+  assert.deepEqual(CHROME_SCHEDULER_TRACE_PROFILES.tasks,wanted);
+  assert.equal(Object.isFrozen(CHROME_SCHEDULER_TRACE_PROFILES),true);
+  assert.equal(Object.isFrozen(CHROME_SCHEDULER_TRACE_PROFILES.tasks),true);
+  const h=fixture({categories:wanted}),p=await h.start({profile:'tasks'});
+  assert.equal(p.snapshot().availability.available,true);
+  assert.deepEqual(h.calls.find(x=>x.method==='Tracing.start').params.traceConfig.includedCategories,wanted);
+  h.mark('first-active');h.task({cat:'toplevel,renderer.scheduler'});
+  for(const cat of ['cc','viz','gpu'])h.task({cat,name:'ExcludedPipelineEvent'});
+  h.task({cat:'toplevel,gpu',name:'DoWork'});h.pageTime(250);
+  const s=await p.stop();
+  assert.equal(s.profile,'tasks');assert.equal(s.collectionValid,true);assert.equal(s.coverage.activeWindowCovered,true);
+  assert.deepEqual(s.coverage.requestedCategories,wanted);assert.deepEqual(Object.keys(s.coverage.categories),wanted);
+  assert.equal(s.coverage.schedulerObserved,true);assert.equal(s.coverage.compositorObserved,null);assert.equal(s.coverage.gpuObserved,null);
+  assert.equal(s.events.some(e=>e.name==='ExcludedPipelineEvent'),false);
+  assert.equal(s.events.some(e=>e.cat.split(',').some(c=>['cc','viz','gpu'].includes(c))),false);
+  assert.equal(s.events.find(e=>e.name==='DoWork').cat,'toplevel');
+  assert.equal(s.counts.droppedEvents,3);
+  assert.ok(s.coverage.threads.every(t=>JSON.stringify(Object.keys(t.categories))===JSON.stringify(wanted)));
+  assert.equal(h.stats().gameChanges,0);assert.equal(h.calls.filter(x=>x.method==='Tracing.end').length,1);
+  const missing=fixture({categories:['toplevel','blink.user_timing']}),q=await missing.start({profile:'tasks'});
+  assert.equal(q.snapshot().availability.reason,'required-categories-missing');
+  assert.deepEqual(q.snapshot().availability.missingCategories,['renderer.scheduler']);
+  assert.equal(missing.calls.some(x=>x.method==='Tracing.start'),false);
+});
+
+test('graphics uses exactly GPU/viz/user-timing without claiming task or cc coverage',async()=>{
+  const wanted=['gpu','viz','blink.user_timing'];
+  assert.deepEqual(CHROME_SCHEDULER_TRACE_PROFILES.graphics,wanted);
+  assert.equal(Object.isFrozen(CHROME_SCHEDULER_TRACE_PROFILES.graphics),true);
+  const h=fixture({categories:wanted}),p=await h.start({profile:'graphics'});
+  assert.equal(p.snapshot().availability.available,true);
+  assert.deepEqual(h.calls.find(x=>x.method==='Tracing.start').params.traceConfig.includedCategories,wanted);
+  h.mark('first-active');
+  h.task({cat:'gpu',name:'GpuCommandBufferStub::OnWaitSyncToken',ph:'B',ts:1200000,dur:undefined,pid:30,tid:40});
+  h.task({cat:'gpu',name:'GpuCommandBufferStub::OnWaitSyncToken',ph:'E',ts:1207500,dur:undefined,pid:30,tid:40});
+  h.task({cat:'viz',name:'Display::DrawAndSwap',ts:1202000,dur:4000,pid:30,tid:41});
+  h.task({cat:'gpu,toplevel',name:'GpuScheduler::RunNextTask'});
+  for(const cat of ['toplevel','renderer.scheduler','cc'])h.task({cat});
+  h.raw.push({cat:'__metadata',ph:'M',ts:0,pid:30,tid:40,name:'thread_name',args:{name:'CrGpuMain'}});
+  h.pageTime(250);const s=await p.stop();
+  assert.equal(s.profile,'graphics');assert.equal(s.collectionValid,true);assert.equal(s.coverage.activeWindowCovered,true);
+  assert.equal(s.coverage.clockMapped,true);assert.equal(s.coverage.allThreeMarks,true);assert.equal(s.coverage.marksOrdered,true);
+  assert.deepEqual(s.coverage.renderer,{pid:10,tid:20});assert.equal(s.sourceIdentity.stable,true);
+  assert.deepEqual(s.coverage.requestedCategories,wanted);assert.deepEqual(Object.keys(s.coverage.categories),wanted);
+  assert.equal(s.coverage.schedulerObserved,null);assert.equal(s.coverage.compositorObserved,null);assert.equal(s.coverage.gpuObserved,true);
+  assert.equal(s.coverage.categories.gpu,3);assert.equal(s.coverage.categories.viz,1);
+  assert.equal(s.events.some(e=>e.name==='RunTask'),false);assert.equal(s.counts.droppedEvents,3);
+  assert.ok(s.events.every(e=>e.cat==='__metadata'||e.cat.split(',').every(c=>wanted.includes(c))));
+  assert.equal(s.events.find(e=>e.name==='GpuScheduler::RunNextTask').cat,'gpu');
+  assert.deepEqual(s.events.filter(e=>e.name==='GpuCommandBufferStub::OnWaitSyncToken').map(e=>[e.ph,e.ts,e.pid,e.tid]),
+    [['B',1200000,30,40],['E',1207500,30,40]]);
+  assert.equal(s.events.find(e=>e.name==='Display::DrawAndSwap').dur,4000);
+  assert.equal(s.events.find(e=>e.args?.name==='CrGpuMain').tid,40);
+  assert.ok(s.coverage.threads.every(t=>JSON.stringify(Object.keys(t.categories))===JSON.stringify(wanted)));
+  assert.equal(h.stats().gameChanges,0);assert.equal(h.timers.size,0);assert.equal(h.calls.filter(x=>x.method==='Tracing.end').length,1);
+  for(const category of ['gpu','viz']){
+    const missing=fixture({categories:wanted.filter(c=>c!==category)}),q=await missing.start({profile:'graphics'});
+    assert.equal(q.snapshot().availability.reason,'required-categories-missing');
+    assert.deepEqual(q.snapshot().availability.missingCategories,[category]);
+    assert.equal(missing.calls.some(x=>x.method==='Tracing.start'),false);
+  }
+  const empty=fixture({categories:wanted}),q=await empty.start({profile:'graphics'});empty.mark('first-active');empty.pageTime(250);
+  const e=await q.stop();assert.equal(e.collectionValid,true);assert.equal(e.coverage.activeWindowCovered,true);
+  assert.equal(e.coverage.gpuObserved,false);assert.equal(e.coverage.categories.viz,0);
+  assert.equal(e.coverage.schedulerObserved,null);assert.equal(e.coverage.compositorObserved,null);
+});
+
+test('graphics missing stop marker and bounded overflow cannot qualify the active window',async()=>{
+  const missing=fixture({transformEvents(rows){rows.splice(rows.findIndex(e=>e.name==='th09-sched-capture-stop'),1);}});
+  const p=await missing.start({profile:'graphics'});missing.mark('first-active');const s=await p.stop();
+  assert.equal(s.marks.length,3);assert.equal(s.collectionValid,true);
+  assert.equal(s.coverage.clockMapped,false);assert.equal(s.coverage.allThreeMarks,false);assert.equal(s.coverage.activeWindowCovered,false);
+  const full=fixture({limits:{events:4}}),q=await full.start({profile:'graphics'});full.mark('first-active');
+  for(let i=0;i<5;++i)full.task({cat:'gpu',name:'GpuScheduler::RunNextTask'});
+  const f=await q.stop();assert.ok(f.overflow.events>0);assert.ok(f.events.length<=4);
+  assert.equal(f.collectionValid,false);assert.equal(f.coverage.activeWindowCovered,false);
+  assert.equal(full.stats().gameChanges,0);assert.equal(full.timers.size,0);
+});
+
+test('profiles cannot silently broaden to arbitrary names or caller category arrays',async()=>{
+  for(const profile of ['gpu','constructor',['toplevel']]){
+    const h=fixture(),p=await h.start({profile}),s=p.snapshot();
+    assert.equal(s.profile,null);assert.equal(s.availability.reason,'unsupported-profile');
+    assert.equal(s.collectionValid,false);assert.equal(h.calls.length,0);
+    assert.deepEqual(h.stats(),{readCount:0,sessionCount:0,detachCount:0,gameChanges:0});
+  }
+});
+
+test('80 percent and sub-full saturation stop once and cannot qualify as complete capture',async()=>{
+  assert.equal(CHROME_SCHEDULER_TRACE_BUFFER_HIGH_WATER,0.80);
+  for(const field of ['percentFull','value']){
+    const h=fixture(),p=await h.start();h.mark('first-active');
+    h.session.emit('Tracing.bufferUsage',{[field]:0.799,eventCount:40});await flush();
+    assert.equal(h.calls.some(x=>x.method==='Tracing.end'),false);assert.equal(p.snapshot().capture.bufferHighWater,false);
+    h.session.emit('Tracing.bufferUsage',{[field]:0.80,eventCount:44});
+    h.session.emit('Tracing.bufferUsage',{[field]:0.996245,eventCount:55});await flush();
+    const s=await p.stop('capture-stop');
+    assert.equal(s.capture.reason,'buffer-high-water');assert.equal(s.capture.bufferHighWater,true);
+    assert.equal(s.capture.bufferHighWaterThreshold,0.80);assert.equal(s.capture.censored,true);
+    assert.equal(s.capture.firstBufferHighWater[field],0.80);assert.equal(s.capture.firstBufferHighWater.eventCount,44);
+    assert.equal(s.capture.chromeBufferFull,false);assert.equal(s.capture.tracingCompleteReceived,true);assert.equal(s.capture.dataLossOccurred,false);
+    assert.equal(s.collectionValid,false);assert.equal(s.coverage.activeWindowCovered,false);
+    assert.equal(s.marks.some(m=>m.stage==='capture-stop'),false);
+    assert.equal(h.calls.filter(x=>x.method==='Tracing.end').length,1);assert.strictEqual(await p.stop('finally'),s);
+    assert.equal(h.stats().gameChanges,0);assert.equal(h.timers.size,0);
+  }
+});
+
+test('tasks retains missing stop-marker, data-loss and incomplete-flush qualification failures',async()=>{
+  const missing=fixture({transformEvents(rows){rows.splice(rows.findIndex(e=>e.name==='th09-sched-capture-stop'),1);}});
+  const p=await missing.start({profile:'tasks'});missing.mark('first-active');const s=await p.stop();
+  assert.equal(s.marks.length,3);assert.equal(s.collectionValid,true);
+  assert.equal(s.coverage.clockMapped,false);assert.equal(s.coverage.allThreeMarks,false);assert.equal(s.coverage.activeWindowCovered,false);
+  const lost=fixture({dataLoss:true}),q=await lost.start({profile:'tasks'});lost.mark('first-active');const l=await q.stop();
+  assert.equal(l.capture.dataLossOccurred,true);assert.equal(l.collectionValid,false);assert.equal(l.coverage.activeWindowCovered,false);
+  const absent=fixture({noComplete:true,limits:{completionTimeoutMs:40}}),r=await absent.start({profile:'tasks'});
+  absent.mark('first-active');const pending=r.stop();await absent.tick(40);const a=await pending;
+  assert.equal(a.capture.tracingCompleteReceived,false);assert.equal(a.capture.dataLossOccurred,null);
+  assert.equal(a.collectionValid,false);assert.equal(a.coverage.activeWindowCovered,false);
+  assert.ok(a.errors.some(e=>e.code==='tracing-complete-timeout'));assert.equal(absent.timers.size,0);
+  const unknown=fixture({noComplete:true}),t=await unknown.start({profile:'tasks'});unknown.mark('first-active');
+  const incomplete=t.stop();await flush();unknown.session.emit('Tracing.tracingComplete',{});
+  const u=await incomplete;assert.equal(u.capture.tracingCompleteReceived,true);assert.equal(u.capture.dataLossOccurred,null);
+  assert.equal(u.collectionValid,false);assert.equal(u.coverage.activeWindowCovered,false);assert.equal(unknown.timers.size,0);
+});
+
 test('unknown names and dynamic args/IDs never survive sanitization',async()=>{
   const h=fixture(),p=await h.start();h.mark('first-active');
   h.task({name:'https://fixture.invalid/?room=secret',args:{url:'https://private.invalid',data:'secret-payload'},scope:'secret-scope',
